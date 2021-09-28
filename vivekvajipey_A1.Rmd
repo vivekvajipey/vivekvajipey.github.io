@@ -1,0 +1,299 @@
+---
+title: "vivekvajipey_A1"
+output: html_document
+---
+
+```{r}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(plotly)
+library(gapminder)
+```
+
+```{r}
+years <- 2017:2021
+quarters <- 1:4
+type <- "Electric"
+
+pge_2017to2021_elec <- NULL
+
+for(year in years) {
+  
+  if (year == 2021) {
+    quarters <- 1:2
+  }
+  
+  for(quarter in quarters) {
+  
+  filename <- 
+    paste0(
+      "pge/PGE_",
+      year,
+      "_Q",
+      quarter,
+      "_",
+      type,
+      "UsageByZip.csv"
+    )
+
+  print(filename)
+  
+  temp <- read_csv(filename)
+  
+  pge_2017to2021_elec <- rbind(pge_2017to2021_elec,temp)
+  # Note rbind requires field names to be consistent for every new thing that you add.
+
+  saveRDS(pge_2017to2021_elec, "pge_2017to2021_elec.rds")
+  }
+}
+```
+
+```{r}
+years <- 2017:2021
+quarters <- 1:4
+type <- "Gas"
+
+pge_2017to2021_gas <- NULL
+
+for(year in years) {
+  
+  if (year == 2021) {
+    quarters <- 1:2
+  }
+  
+  for(quarter in quarters) {
+  
+  filename <- 
+    paste0(
+      "pge/PGE_",
+      year,
+      "_Q",
+      quarter,
+      "_",
+      type,
+      "UsageByZip.csv"
+    )
+
+  print(filename)
+  
+  temp <- read_csv(filename)
+  
+  pge_2017to2021_gas <- rbind(pge_2017to2021_gas,temp)
+  # Note rbind requires field names to be consistent for every new thing that you add.
+
+  saveRDS(pge_2017to2021_gas, "pge_2017to2021_gas.rds")
+  }
+}
+```
+
+```{r}
+pge_res_elec <-
+  pge_2017to2021_elec %>% 
+  filter(
+    CUSTOMERCLASS %in% 
+      c(
+        "Elec- Residential"
+      )
+  ) %>% 
+  mutate(
+    DATE = YEAR + 0.01*MONTH
+  ) %>% 
+  mutate(TOTALKBTU = TOTALKWH * 3.4121416416) %>% 
+  select(
+    -c(YEAR, COMBINED, AVERAGEKWH)
+  ) %>% 
+  group_by(DATE, CUSTOMERCLASS) %>%
+  summarize(
+    TOTALKBTU =
+      sum(
+        TOTALKBTU,
+        na.rm = T
+      ),
+    TOTALCUSTOMERS =
+      sum(
+        TOTALCUSTOMERS,
+        na.rm = T
+      )
+  ) %>%
+  mutate(
+    AVERAGEKBTU =
+      TOTALKBTU/TOTALCUSTOMERS
+  )
+
+pge_res_elec
+```
+
+```{r}
+pge_res_gas <-
+  pge_2017to2021_gas %>% 
+  filter(
+    CUSTOMERCLASS %in% 
+      c(
+        "Gas- Residential"
+      )
+  ) %>% 
+  mutate(
+    DATE = YEAR + 0.01*MONTH
+  ) %>% 
+  mutate(TOTALKBTU = TOTALTHM * 99.9761) %>% 
+  select(
+    -c(YEAR, COMBINED, AVERAGETHM)
+  ) %>% 
+  group_by(DATE, CUSTOMERCLASS) %>%
+  summarize(
+    TOTALKBTU =
+      sum(
+        TOTALKBTU,
+        na.rm = T
+      ),
+    TOTALCUSTOMERS =
+      sum(
+        TOTALCUSTOMERS,
+        na.rm = T
+      )
+  ) %>%
+  mutate(
+    AVERAGEKBTU =
+      TOTALKBTU/TOTALCUSTOMERS
+  )
+
+pge_res_gas
+```
+
+```{r}
+pge_residential_final = rbind(pge_res_elec, pge_res_gas)
+pge_residential_final
+```
+
+
+```{r}
+
+pge_res_chart <-
+  pge_residential_final %>% 
+  ggplot() +
+  geom_bar(
+    aes(
+      x = DATE,
+      y = TOTALKBTU,
+      fill = CUSTOMERCLASS
+    ),
+    stat = "identity",
+    position = "stack"
+  ) +
+  labs(
+    x = "Date",
+    y = "kBTU",
+    title = "PG&E Territory Monthly Residential Electricity and Gas Usage, 2017 to 2021",
+    fill = "Energy Type"
+  )
+
+pge_res_chart %>% ggplotly()
+```
+
+```{r}
+pge_com_elec <-
+  pge_2017to2021_elec %>% 
+  filter(
+    CUSTOMERCLASS %in% 
+      c(
+        "Elec- Commercial"
+      )
+  ) %>% 
+  mutate(
+    DATE = YEAR + 0.01*MONTH
+  ) %>% 
+  mutate(TOTALKBTU = TOTALKWH * 3.4121416416) %>% 
+  select(
+    -c(YEAR, COMBINED, AVERAGEKWH)
+  ) %>% 
+  group_by(DATE, CUSTOMERCLASS) %>%
+  summarize(
+    TOTALKBTU =
+      sum(
+        TOTALKBTU,
+        na.rm = T
+      ),
+    TOTALCUSTOMERS =
+      sum(
+        TOTALCUSTOMERS,
+        na.rm = T
+      )
+  ) %>%
+  mutate(
+    AVERAGEKBTU =
+      TOTALKBTU/TOTALCUSTOMERS
+  )
+
+pge_com_elec
+```
+
+```{r}
+pge_com_gas <-
+  pge_2017to2021_gas %>% 
+  filter(
+    CUSTOMERCLASS %in% 
+      c(
+        "Gas- Commercial"
+      )
+  ) %>% 
+  mutate(
+    DATE = YEAR + 0.01*MONTH
+  ) %>% 
+  mutate(TOTALKBTU = TOTALTHM * 99.9761) %>% 
+  select(
+    -c(YEAR, COMBINED, AVERAGETHM)
+  ) %>% 
+  group_by(DATE, CUSTOMERCLASS) %>%
+  summarize(
+    TOTALKBTU =
+      sum(
+        TOTALKBTU,
+        na.rm = T
+      ),
+    TOTALCUSTOMERS =
+      sum(
+        TOTALCUSTOMERS,
+        na.rm = T
+      )
+  ) %>%
+  mutate(
+    AVERAGEKBTU =
+      TOTALKBTU/TOTALCUSTOMERS
+  )
+
+pge_com_gas
+```
+
+```{r}
+pge_commercial_final = rbind(pge_com_elec, pge_com_gas)
+pge_commercial_final
+```
+
+
+```{r}
+
+pge_com_chart <-
+  pge_commercial_final %>% 
+  ggplot() +
+  geom_bar(
+    aes(
+      x = DATE,
+      y = TOTALKBTU,
+      fill = CUSTOMERCLASS
+    ),
+    stat = "identity",
+    position = "stack"
+  ) +
+  labs(
+    x = "Date",
+    y = "kBTU",
+    title = "PG&E Territory Monthly Commercial Electricity and Gas Usage, 2017 to 2021",
+    fill = "Energy Type"
+  )
+
+pge_com_chart %>% ggplotly()
+```

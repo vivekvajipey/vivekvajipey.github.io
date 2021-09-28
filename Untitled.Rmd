@@ -1,0 +1,209 @@
+---
+title: "Assignment1"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+library(tidyverse)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+
+```{r}
+pge_20_q1_elec <- read_csv("PGE_2020_Q1_ElectricUsageByZip.csv")
+write_csv(pge_20_q1_elec, "PGE_2020")
+```
+
+```{r}
+library(tidyverse)
+
+year <- 2020
+quarters <- 1:4
+type <- "Electric"
+
+pge_20_elec <- NULL
+
+for(quarter in quarters) {
+  
+  filename <- 
+    paste0(
+      "pge/PGE_",
+      year,
+      "_Q",
+      quarter,
+      "_",
+      type,
+      "UsageByZip.csv"
+    )
+
+  print(filename)
+  
+  temp <- read_csv(filename)
+  
+  pge_20_elec <- rbind(pge_20_elec,temp)
+  # Note rbind requires field names to be consistent for every new thing that you add.
+
+  saveRDS(pge_20_elec, "pge_20_elec.rds")
+}
+```
+
+```{r}
+pge_filter <- 
+  filter(
+    pge_20_elec,
+    CUSTOMERCLASS %in% 
+      c(
+        "Elec- Residential",
+        "Elec- Commercial"
+      )
+  )
+```
+
+```{r}
+names(pge_filter)
+head(pge_filter)
+```
+
+```{r}
+pge_filter[1:5, ]$YEAR
+```
+
+```{r}
+pge_select <-
+  select(
+    pge_filter,
+    -c(YEAR, COMBINED, AVERAGEKWH)
+  )
+```
+
+```{r}
+pge_group <-
+  group_by(
+    pge_select,
+    MONTH,
+    CUSTOMERCLASS
+  )
+```
+
+```{r}
+pge_summarize <-
+  summarize(
+    pge_group,
+    TOTALKWH = 
+      sum(
+        TOTALKWH, 
+        na.rm = T
+      ),
+    TOTALCUSTOMERS =
+      sum(
+        TOTALCUSTOMERS,
+        na.rm = T
+      )
+  )
+
+pge_mutate <-
+  mutate(
+    pge_summarize,
+    AVERAGEKWH =
+      TOTALKWH/TOTALCUSTOMERS
+  )
+```
+
+```{r}
+pge_wide <-
+  pivot_wider(
+    pge_summarize,
+    names_from = CUSTOMERCLASS,
+    values_from = TOTALKWH
+  )
+
+pge_wide
+```
+
+```{r}
+pge_tidy <-
+  pivot_longer(
+    pge_wide,
+    c("Elec- Commercial", "Elec- Residential"),
+    names_to = "CUSTOMERCLASS",
+    values_to = "TOTALKWH"
+  )
+```
+
+```{r}
+pge_final <-
+  pge_20_elec %>% 
+  filter(
+    CUSTOMERCLASS %in% 
+      c(
+        "Elec- Residential",
+        "Elec- Commercial"
+      )
+  ) %>% 
+  select(
+    -c(YEAR, COMBINED, AVERAGEKWH)
+  ) %>% 
+  group_by(MONTH, CUSTOMERCLASS) %>% 
+  summarize(
+    TOTALKWH = 
+      sum(
+        TOTALKWH, 
+        na.rm = T
+      ),
+    TOTALCUSTOMERS =
+      sum(
+        TOTALCUSTOMERS,
+        na.rm = T
+      )
+  ) %>% 
+  mutate(
+    AVERAGEKWH =
+      TOTALKWH/TOTALCUSTOMERS
+  )
+
+pge_final
+```
+
+```{r}
+library(plotly)
+
+pge_chart <-
+  pge_final %>% 
+  ggplot() +
+  geom_bar(
+    aes(
+      x = MONTH,
+      y = TOTALKWH,
+      fill = CUSTOMERCLASS
+    ),
+    stat = "identity",
+    position = "stack"
+  ) +
+  labs(
+    x = "Month",
+    y = "kWh",
+    title = "PG&E Territory Monthly Electricity Usage, 2019",
+    fill = "Electricity Type"
+  )
+
+pge_chart %>% ggplotly()
+```
+
+
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
