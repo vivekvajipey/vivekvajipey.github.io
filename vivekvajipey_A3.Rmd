@@ -4,7 +4,7 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo=FALSE)
+knitr::opts_chunk$set(echo = F, warnings = F, messages = F)
 
 library(censusapi)
 library(tidyverse)
@@ -92,8 +92,9 @@ bay_pums_heat_risk <-
   )
 ```
 
-Total with Vulnerability Characteristics
+
 ```{r include=FALSE}
+#Total with Vulnerability Characteristics
 sum(bay_pums_heat_risk$waterinsec_foodinsec_lowinc)
 ```
 
