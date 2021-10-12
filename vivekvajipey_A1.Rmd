@@ -4,7 +4,7 @@ output: html_document
 ---
 
 ```{r}
-knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(echo = FALSE, warning = F, message = F)
 ```
 
 

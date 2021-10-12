@@ -1,0 +1,376 @@
+---
+title: "vivekvajipey_A2"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+
+library(tidyverse)
+library(sf)
+library(tigris)
+library(leaflet)
+library(censusapi)
+
+Sys.setenv(CENSUS_KEY="c8aa67e4086b4b5ce3a8717f59faa9a28f611dab")
+
+acs_vars_2019_5yr <-
+  listCensusMetadata(
+    name = "2019/acs/acs5",
+    type = "variables"
+  )
+```
+
+```{r}
+ca_counties <- counties("CA", cb = T, progress_bar = F)
+ggplot(ca_counties) + geom_sf()
+
+mapview(ca_counties)
+
+leaflet() %>% 
+  addTiles() %>% 
+  addPolygons(
+    data = ca_counties
+  ) %>%
+  addMarkers(
+    data = ca_counties %>% 
+      st_centroid()
+  )
+```
+
+```{r}
+bay_county_names <-
+  c(
+    "Alameda",
+    "Contra Costa",
+    "Marin",
+    "Napa",
+    "San Francisco",
+    "San Mateo",
+    "Santa Clara",
+    "Solano",
+    "Sonoma"
+  )
+
+bay_counties <-
+  counties("CA", cb = T, progress_bar = F) %>%
+  filter(NAME %in% bay_county_names)
+
+ggplot(bay_counties) + geom_sf()
+```
+
+```{r}
+ca_cities <- places("CA", cb = T, progress_bar = FALSE)
+
+bay_cities <- ca_cities[bay_counties, ]
+
+bay_cities_within <-
+  ca_cities %>% 
+  st_centroid() %>% 
+  .[bay_counties, ] %>% 
+  st_set_geometry(NULL) %>% 
+  left_join(ca_cities %>% select(GEOID)) %>% 
+  st_as_sf()
+
+mapview(bay_counties, alpha.regions = 0) + mapview(bay_cities_within, label = "NAME")
+```
+
+```{r}
+leaflet() %>% 
+  addTiles() %>% 
+  addPolygons(
+    data = bay_counties,
+    fill = F,
+    weight = 2,
+    label = ~NAME
+  ) %>%
+  addPolygons(
+    data = bay_cities %>% 
+      filter(!GEOID %in% bay_cities_within$GEOID),
+    color = "red",
+    label = ~NAME
+  ) %>% 
+  addPolygons(
+    data = bay_cities_within,
+    color = "green",
+    label = ~NAME
+  )
+```
+
+```{r}
+bay_cbgs <- block_groups("CA", bay_county_names[1:9], cb = T, progress_bar = F)
+
+bay_cbgs <- 
+  bay_county_names %>% 
+  map_dfr(function(county) {
+    block_groups("CA", county, cb = T, progress_bar = F)
+  })
+```
+
+```{r}
+bay_cbgs_clip <- st_read("https://opendata.arcgis.com/datasets/037fc1597b5a4c6994b89c46a8fb4f06_0.geojson")
+
+ggplot(bay_cbgs_clip)+geom_sf()x
+```
+
+```{r}
+pge_20_elec <- read_csv("PGE_2020_Q1_ElectricUsageByZip.csv")
+
+usa_zips <- 
+  zctas(cb = T, progress_bar = F)
+
+bay_zips <-
+  usa_zips %>% 
+  st_centroid() %>% 
+  .[bay_counties, ] %>% 
+  st_set_geometry(NULL) %>% 
+  left_join(usa_zips %>% select(GEOID10)) %>% 
+  st_as_sf()
+
+pge_20_res_elec <-
+  pge_20_elec %>% 
+  filter(CUSTOMERCLASS == "Elec- Residential") %>% 
+  mutate(
+    ZIPCODE = ZIPCODE %>% as.character()
+  ) %>% 
+  group_by(ZIPCODE) %>% 
+  summarize(
+    TOTALKWH = sum(TOTALKWH, na.rm = T)
+  ) %>% 
+  right_join(
+    bay_zips %>% select(GEOID10),
+    by = c("ZIPCODE" = "GEOID10")
+  ) %>% 
+  st_as_sf() %>% 
+  st_transform(4326)
+```
+
+```{r}
+res_pal <- colorNumeric(
+  palette = "Reds",
+  domain = 
+    pge_20_res_elec$TOTALKWH
+)
+
+leaflet() %>% 
+  addTiles() %>% 
+  addPolygons(
+    data = pge_20_res_elec,
+    fillColor = ~res_pal(TOTALKWH),
+    color = "white",
+    opacity = 0.5,
+    fillOpacity = 0.5,
+    weight = 1,
+    label = ~paste0(
+      round(TOTALKWH), 
+      " kWh total in ",
+      ZIPCODE
+    ),
+    highlightOptions = highlightOptions(
+      weight = 2,
+      opacity = 1
+    )
+  ) %>% 
+  addLegend(
+    data = pge_20_res_elec,
+    pal = res_pal,
+    values = ~TOTALKWH,
+    title = "Total Residential<br>kWh, 2020"
+  )
+```
+
+```{r}
+smc_sexbyage <-
+  getCensus(
+    name = "acs/acs5",
+    vintage = 2019,
+    region = "block group:*", 
+    regionin = "state:06+county:081",
+    vars = "group(B01001)"
+  ) %>%
+  mutate(
+    cbg =
+      paste0(state,county,tract,block_group)
+  ) %>% 
+  select(!c(GEO_ID,state,county,tract,block_group,NAME) & !ends_with(c("EA","MA","M"))) %>%
+  pivot_longer(
+    ends_with("E"),
+    names_to = "variable",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    acs_vars_2019_5yr %>% 
+      select(name, label), 
+    by = c("variable" = "name")
+  ) %>% 
+  select(-variable) %>% 
+  separate(
+    label,
+    into = c(NA,NA,"sex","age"),
+    sep = "!!"
+  ) %>% 
+  filter(!is.na(age))
+```
+
+```{r}
+smc_elderly <- 
+  smc_sexbyage %>% 
+  mutate(
+    elderly = 
+      ifelse(
+        age %in% c(
+          "65 and 66 years",
+          "67 to 69 years",
+          "70 to 74 years",
+          "75 to 79 years",
+          "80 to 84 years",
+          "85 years and over"
+        ),
+        estimate,
+        NA
+      )
+  ) %>% 
+  group_by(cbg) %>% 
+  summarize(
+    elderly = sum(elderly, na.rm = T),
+    total_pop = sum(estimate, na.rm = T)
+  ) %>% 
+  mutate(
+    percent_elderly = elderly/total_pop*100
+  ) %>% 
+  filter(!is.na(percent_elderly))
+```
+
+```{r}
+smc_blockgroups <- block_groups("CA", "San Mateo", cb = T, progress_bar = F)
+
+elderly_pal <- colorNumeric(
+  palette = "Blues",
+  domain = 
+    smc_elderly$percent_elderly
+)
+
+leaflet() %>% 
+  addProviderTiles(provider = providers$CartoDB.Positron) %>% 
+  addPolygons(
+    data = 
+      smc_elderly %>% 
+        left_join(
+          smc_blockgroups %>% select(GEOID), 
+          by = c("cbg" = "GEOID")
+        ) %>% 
+        st_as_sf(),
+    fillColor = ~elderly_pal (percent_elderly),
+    color = "white",
+    opacity = 0.5,
+    fillOpacity = 0.75,
+    weight = 1,
+    label = ~paste0(
+      round(percent_elderly), 
+      "% over age 65"
+    ),
+    highlightOptions = highlightOptions(
+      weight = 2,
+      opacity = 1
+    )
+  ) %>% 
+  addLegend(
+    data = smc_elderly,
+    pal = elderly_pal,
+    values = ~percent_elderly,
+    title = "% over 65"
+  )
+```
+
+```{r}
+Sys.setenv(CENSUS_KEY="c8aa67e4086b4b5ce3a8717f59faa9a28f611dab")
+
+smc_pop_2020 <-
+  getCensus(
+    name = "dec/pl",
+    vintage = 2020,
+    region = "block:*", 
+    regionin = "state:06+county:081",
+    vars = "P1_001N"
+  ) %>% 
+  transmute(
+    block =
+      paste0(state,county,tract,block),
+    pop = P1_001N
+  )
+
+dec_vars_2020 <-
+  listCensusMetadata(
+    name = "2020/dec/pl",
+    type = "variables"
+  )
+
+smc_pop_race_2020 <-
+  getCensus(
+    name = "dec/pl",
+    vintage = 2020,
+    region = "block:*", 
+    regionin = "state:06+county:081",
+    vars = "group(P1)"
+  ) %>% 
+  mutate(
+    block =
+      paste0(state,county,tract,block)
+  ) %>% 
+  select(!c(GEO_ID,state,county,tract,NAME) & !ends_with(c("NA"))) %>% 
+  pivot_longer(
+    ends_with("N"),
+    names_to = "name",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    dec_vars_2020 %>% 
+      select(name, label)
+  ) %>% 
+  select(-name) %>% 
+  separate(
+    label,
+    into = c(NA,NA,"category1","category2"),
+    sep = "!!"
+  )
+
+dec_vars_2020 %>% 
+  filter(grepl("P1",name)) %>% 
+  select(name, label) %>% 
+  arrange(name)
+
+smc_pop_race_2020 <- smc_pop_race_2020 %>% 
+  mutate(
+    race = case_when(
+      category1 == "Population of two or more races:" & is.na(category2) ~ "Two or more races",
+      category1 == "Population of two or more races:" ~ "",
+      !is.na(category2) ~ category2,
+      TRUE ~ ""
+    )
+  )
+
+smc_pop_race_2020 <- smc_pop_race_2020 %>% 
+  filter(race != "") %>% 
+  select(block, race, pop = estimate)
+```
+
+```{r}
+smc_blocks_2020 <- blocks("CA", "San Mateo", year = 2020, progress_bar = F)
+
+nfo_boundary <- places("CA", progress_bar = F) %>% 
+  filter(NAME == "North Fair Oaks")
+
+nfo_pop_2020 <- smc_pop_2020 %>% 
+  left_join(smc_blocks_2020 %>% select(block = GEOID20)) %>% 
+  st_as_sf() %>% 
+  st_centroid() %>% 
+  .[nfo_boundary, ] %>% 
+  st_set_geometry(NULL) %>% 
+  left_join(smc_blocks_2020 %>% select(block = GEOID20)) %>% 
+  st_as_sf()
+```
+
+```{r}
+mapview(nfo_pop_2020, zcol = "pop")
+```
+

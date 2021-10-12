@@ -1,0 +1,21 @@
+---
+title: "vivekvajipey_A2"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, warning = F, message = F)
+```
+
+```{r}
+library(tidyverse)
+library(sf)
+library(tigris)
+library(mapview)
+library(leaflet)
+library(censusapi)
+```
+
+```{r}
+ca_places <- places("CA", cb = T, progress_bar = F)
+```
