@@ -4,18 +4,274 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = F, warning = F, message = F)
-```
+knitr::opts_chunk$set(echo = F, warnings = F, messages = F)
 
-```{r}
 library(tidyverse)
 library(sf)
 library(tigris)
 library(mapview)
 library(leaflet)
 library(censusapi)
+
+Sys.setenv(CENSUS_KEY="67343486046933b2d74f13923ac153228348f817")
+projection <- "+proj=utm +zone=10 +ellps=GRS80 +datum=NAD83 +units=ft +no_defs"
+```
+
+```{r include=FALSE}
+bay_county_names <-
+  c(
+    "Alameda",
+    "Contra Costa",
+    "Marin",
+    "Napa",
+    "San Francisco",
+    "San Mateo",
+    "Santa Clara",
+    "Solano",
+    "Sonoma"
+  )
+
+bay_counties <-
+  counties("CA", cb = T, progress_bar = F) %>%
+  filter(NAME %in% bay_county_names)
+```
+
+```{r include=FALSE}
+berkeley_tracts <- c(421300, 421200, 421100, 421500, 421400, 421600, 421700, 421800, 421900, 422000, 422100, 422200, 422300, 422400, 422500, 422600, 422700, 422800, 422900, 423000, 423100, 423200, 423300, 423400, 423500, 423601, 423602, 423700, 423800, 423902, 423901, 424001, 424002)
+```
+
+```{r include=FALSE}
+alameda_cbgs <- block_groups("CA", "Alameda", cb = T, progress_bar = F)
+  
+berkeley_cbgs <-
+  alameda_cbgs %>% 
+  filter(
+    TRACTCE %in% berkeley_tracts
+  ) %>% 
+    mutate(
+    land_acres = ALAND * 0.000247105
+  ) %>% 
+  mutate(
+    block =
+      paste0(STATEFP,COUNTYFP,TRACTCE,BLKGRPCE)
+  ) %>%
+  select(!c(STATEFP,COUNTYFP,TRACTCE,BLKGRPCE, LSAD, ALAND, AWATER))
+```
+
+```{r include=FALSE}
+dec_vars_2020 <-
+  listCensusMetadata(
+    name = "2020/dec/pl",
+    type = "variables"
+  )
+
+berk_pop_race_2020 <-
+  getCensus(
+    name = "dec/pl",
+    vintage = 2020,
+    region = "block:*",
+    regionin = "state:06+county:001",
+    vars = "group(P1)"
+  ) %>%
+  filter(
+    tract %in% berkeley_tracts
+  ) %>% 
+  mutate(
+    block =
+      paste0(state,county,tract,block)
+  ) %>%
+  select(!c(GEO_ID,state,county,tract,NAME) & !ends_with(c("NA"))) %>%
+  pivot_longer(
+    ends_with("N"),
+    names_to = "name",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    dec_vars_2020 %>%
+      select(name, label)
+  ) %>%
+  select(-name) %>%
+  separate(
+    label,
+    into = c(NA,NA,"category1","category2"),
+    sep = "!!"
+  )
+```
+
+```{r include=FALSE}
+berk_pop_race_2020 <- 
+  berk_pop_race_2020 %>% 
+  mutate(
+    race = case_when(
+      category2 == "White alone" ~ "",
+      category1 == "Population of two or more races:" & is.na(category2) ~ "Two or more races",
+      category1 == "Population of two or more races:" ~ "",
+      !is.na(category2) ~ category2,
+      TRUE ~ ""
+    )
+  ) %>%
+  filter(category2 != "White alone") %>% 
+  filter(race != "") %>%
+  select(block, race, pop = estimate)
+```
+
+```{r include=FALSE}
+dec_vars_2010 <-
+  listCensusMetadata(
+    name = "2010/dec/pl",
+    type = "variables"
+  )
+
+berk_pop_race_2010 <-
+  getCensus(
+    name = "dec/pl",
+    vintage = 2010,
+    region = "block:*",
+    regionin = "state:06+county:001",
+    vars = "group(P1)"
+  ) %>% 
+  filter(
+    tract %in% berkeley_tracts
+  ) %>% 
+  mutate(
+    block =
+      paste0(state, county, tract, block)
+  ) %>%
+  select(!c(GEO_ID,state,county,tract,NAME)) %>%
+  pivot_longer(
+    starts_with("P"),
+    names_to = "name",
+    values_to = "estimate"
+  ) %>%
+    left_join(
+      dec_vars_2010 %>%
+        select(name, label)
+  ) %>%
+  select(-name) %>%
+  separate(
+    label,
+    into = c(NA,NA,"category1","category2"),
+    sep = "!!"
+  )
+```
+
+```{r include=FALSE}
+unique(berk_pop_race_2010$category1)
+```
+
+```{r include=FALSE}
+berk_pop_race_2010 <- 
+  berk_pop_race_2010 %>% 
+  mutate(
+    race = case_when(
+      # category1 == "White alone" & is.na(category2) ~ "White alone",
+      category1 == "Black or African American alone" & is.na(category2) ~ "Black or African American alone",
+      category1 == "American Indian and Alaska Native alone" & is.na(category2) ~ "American Indian and Alaska Native alone",
+      category1 == "Asian alone" & is.na(category2) ~ "Asian alone",
+      category1 == "Native Hawaiian and Other Pacific Islander alone" & is.na(category2) ~ "Native Hawaiian and Other Pacific Islander alone",
+      category1 == "Some Other Race alone" & is.na(category2) ~ "Some Other Race alone",
+      category1 == "Population of two races" & is.na(category2) ~ "Population of two races",
+      category1 == "Population of three races" & is.na(category2) ~ "Population of three races",
+      category1 == "Population of four races" & is.na(category2) ~ "Population of four races",
+      category1 == "Population of five races" & is.na(category2) ~ "Population of five races",
+      category1 == "Population of six races" & is.na(category2) ~ "Population of six races",
+      TRUE ~ ""
+    )
+  )
+
+berk_pop_race_2010 <- berk_pop_race_2010 %>% 
+  filter(category1 != "White alone") %>% 
+  filter(race != "") %>% 
+  select(block, race, pop = estimate)
+```
+
+```{r include=FALSE}
+sorted_berk_pop_nonwhite_2010 <- berk_pop_race_2010[order(berk_pop_race_2010$block, berk_pop_race_2010$race), ]
+sorted_berk_pop_nonwhite_2020 <- berk_pop_race_2020[order(berk_pop_race_2020$block, berk_pop_race_2020$race), ]
+```
+
+```{r include=FALSE}
+sums_berk_pop_nonwhite_2010 <- 
+  subset(sorted_berk_pop_nonwhite_2010, select = c(block, pop)) %>% 
+  group_by(block) %>% 
+  summarise_all(funs(sum))
+
+names(sums_berk_pop_nonwhite_2010)[names(sums_berk_pop_nonwhite_2010) == 'pop'] <- 'pop2010'
+
+sums_berk_pop_nonwhite_2020 <- 
+  subset(sorted_berk_pop_nonwhite_2020, select = c(block, pop)) %>% 
+  group_by(block) %>% 
+  summarise_all(funs(sum))
+
+names(sums_berk_pop_nonwhite_2020)[names(sums_berk_pop_nonwhite_2020) == 'pop'] <- 'pop2020'
+
+```
+
+```{r include=FALSE}
+combined_berk_pop_nonwhite <-
+  inner_join(sums_berk_pop_nonwhite_2020, sums_berk_pop_nonwhite_2010, by = "block"
+  ) %>% 
+  mutate(
+    pop_change = pop2020 - pop2010
+  ) %>% 
+  mutate(
+    block = str_sub(block, 1, 12)
+  ) %>% 
+  group_by(block) %>% 
+  summarise_all(funs(sum))
+```
+
+```{r include=FALSE}
+berk_pop_density_nonwhite <-
+  left_join(
+    combined_berk_pop_nonwhite, 
+    as.data.frame(berkeley_cbgs),
+    by = "block"
+    ) %>% 
+  mutate(
+    pop_density_change = pop_change / land_acres
+  )
 ```
 
 ```{r}
-ca_places <- places("CA", cb = T, progress_bar = F)
+pop_density_pal <- colorNumeric(
+  palette = "RdBu",
+  domain = 
+    berk_pop_density_nonwhite$pop_density_change
+)
+
+leaflet() %>% 
+  addProviderTiles(provider = providers$CartoDB.Positron) %>% 
+  addPolygons(
+    data = 
+      berk_pop_density_nonwhite %>% 
+        st_as_sf(),
+    fillColor = ~pop_density_pal(pop_density_change),
+    color = "white",
+    opacity = 0.5,
+    fillOpacity = 0.75,
+    weight = 1,
+    label = ~paste0(
+      round(pop_density_change), 
+      ifelse(
+      round(pop_density_change) == 1,
+      " person per acre",
+      " people per acre"
+      )
+    ),
+    highlightOptions = highlightOptions(
+      weight = 2,
+      opacity = 1
+    )
+  ) %>% 
+  addLegend(
+    data = berk_pop_density_nonwhite,
+    pal = pop_density_pal,
+    values = ~pop_density_change,
+    title = "Absolute Change in Non-White Population Density of Berkeley, CA between 2010 and 2020"
+  )
 ```
+
+Interestingly, the vast majority of census block groups in Berkeley exhibit a negative change in non-White population density. It is possible that this change from 2010 to 2020 is a product of historical redlining in the area. An intriguing extension of this investigation could involve analyzing the changes in socioeconomic status in these 10 years, which could be reflected by statistics such as the median income. A key assumption was the consistency in the methodologies and results in the two decennial data sets. There were clear differences in the data sets for the Berkeley region, such as the structure of the race data and the format of the category 1 and category 2 columns. Due to the differences in the 2010 and 2020 data frames, an inner join was used to calculate population changes, which does end up removing data that is not found in both data sets. The population density calculations are based on the ALAND values for land area.
+
+

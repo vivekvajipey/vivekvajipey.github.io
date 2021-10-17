@@ -27,6 +27,7 @@ for(year in years) {
     quarters <- 1:2
   }
   
+  
   for(quarter in quarters) {
   
   filename <- 
