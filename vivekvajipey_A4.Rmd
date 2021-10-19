@@ -1,0 +1,176 @@
+---
+title: "vivekvajipey_A4"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, warnings = F, messages = F)
+
+library(tidyverse)
+library(sf)
+library(tigris)
+library(leaflet)
+library(censusapi)
+library(mapview)
+library(readxl)
+
+Sys.setenv(CENSUS_KEY="c8aa67e4086b4b5ce3a8717f59faa9a28f611dab")
+
+acs_vars_2019_5yr <-
+  listCensusMetadata(
+    name = "2019/acs/acs5",
+    type = "variables"
+  )
+```
+
+```{r include=FALSE}
+census_race_categories <- 
+  c(
+    "White Alone",
+    "Black or African American",
+    "American Indian and Alaska Native Alone",
+    "Asian Alone",
+    "Native Hawaiian and Other Pacific Islander Alone",
+    "Some Other Race Alone",
+    "Two or More Races"
+  )
+
+sc_edu_race <-
+  1:7 %>% 
+  map_dfr(function(x){
+    getCensus(
+      name = "acs/acs5",
+      vintage = 2019,
+      region = "county:085",
+      regionin = "state:06",
+      vars = paste0("group(C15002",LETTERS[x],")")
+    ) %>%
+      select(!c(GEO_ID,state,NAME) & !ends_with(c("EA","MA","M"))) %>%
+      pivot_longer(
+        ends_with("E"),
+        names_to = "name",
+        values_to = "estimate"
+      ) %>%
+      left_join(
+        acs_vars_2019_5yr %>% 
+          select(name, label)
+      ) %>% 
+      select(-name) %>% 
+      separate(
+        label,
+        into = c(NA,NA,NA,"education"),
+        sep = "!!"
+      ) %>% 
+      filter(!is.na(education)) %>% 
+      mutate(race = census_race_categories[x])
+  })
+```
+
+```{r}
+sc_race_total <-
+  sc_edu_race %>% 
+  group_by(race) %>% 
+  summarize(estimate = sum(estimate)) %>% 
+  mutate(education = "Total")
+
+sc_edu_race %>% 
+  group_by(education, race) %>% 
+  summarize(estimate = sum(estimate)) %>% 
+  rbind(sc_race_total) %>% 
+  ggplot() +
+  geom_bar(
+    aes(
+      x = education %>% factor(levels = rev(c("Total",unique(sc_edu_race$education)))),
+      y = estimate,
+      fill = race %>% factor(levels = rev(unique(sc_edu_race$race)))
+    ),
+    stat = "identity",
+    position = "fill"
+  ) +
+  labs(
+    x = "Educational attainment",
+    y = "Proportion of population 25 years and older",
+    title = "Santa Clara County education attainment by race",
+    fill = "Race"
+  ) +
+  coord_flip() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "vertical"
+  )  +
+  guides(
+    fill = guide_legend(
+      reverse = T
+    )
+  )
+```
+```{r include=FALSE}
+# Percent of population non-white
+((sum(sc_race_total$estimate[1:6])/sum(sc_race_total$estimate))*100) %>% round()
+```
+```{r include=FALSE}
+# Percent of population asian alone
+((sum(sc_race_total$estimate[2])/sum(sc_race_total$estimate))*100) %>% round()
+```
+```{r include=FALSE}
+# Percent of population black or african american alone
+((sum(sc_race_total$estimate[3])/sum(sc_race_total$estimate))*100) %>% round()
+```
+
+```{r include=FALSE}
+# Percent non-white of population with high school graduate education or less
+((sc_edu_race %>% 
+  filter(education %in% sc_edu_race$education[1:2]) %>% 
+  filter(race != "White Alone") %>% 
+  pull(estimate) %>% 
+  sum()) /
+  (sc_edu_race %>% 
+    filter(education %in% sc_edu_race$education[1:2]) %>% 
+    pull(estimate) %>% 
+    sum()) * 100) %>% 
+  round()
+```
+
+```{r include=FALSE}
+# Percent non-white of population with less than a high school diploma
+((sc_edu_race %>% 
+  filter(education %in% sc_edu_race$education[1]) %>% 
+  filter(race != "White Alone") %>% 
+  pull(estimate) %>% 
+  sum()) /
+  (sc_edu_race %>% 
+    filter(education %in% sc_edu_race$education[1]) %>% 
+    pull(estimate) %>% 
+    sum()) * 100) %>% 
+  round()
+```
+
+```{r include=FALSE}
+# percent by which non-whites are more likely to have high school education or less
+((((sc_edu_race %>% 
+  filter(education %in% sc_edu_race$education[1]) %>% 
+  filter(race != "White Alone") %>% 
+  pull(estimate) %>% 
+  sum()) /
+  (sc_edu_race %>% 
+    filter(education %in% sc_edu_race$education[1]) %>% 
+    pull(estimate) %>% 
+    sum())) / (sum(sc_race_total$estimate[1:6])/sum(sc_race_total$estimate)) - 1) * 100) %>% 
+  round()
+```
+
+```{r include=FALSE}
+# Percent black of population with bachelor's or higher
+((sc_edu_race %>% 
+  filter(education %in% sc_edu_race$education[4]) %>% 
+  filter(race == "Black or African American") %>% 
+  pull(estimate) %>% 
+  sum()) /
+  (sc_edu_race %>% 
+    filter(education %in% sc_edu_race$education[4]) %>% 
+    pull(estimate) %>% 
+    sum()) * 100) %>% 
+  round()
+```
+
+In Santa Clara County, 54% of the population over 25 is non-white and 57% of the population over 25 with a high school graduate education or lower is non-white, which fairly close. However, the population over 25 with an education strictly less than a high school diploma is 64% non-white, and non-white individuals seem to be 19% more likely to not have a high school education than expected. For many jobs, a baseline of a high school education is required, which narrows the set of available opportunities for the non-white population in this lowest education tier. The data represent the education of individuals older than 25 and many individuals who complete high school and a potential associate's/bachelor's degree before turning 25, so these data generally represent the highest education to be attained by the individual. It may be insightful to consider the effects of wealth and income on the educational disparities between races, especially since much of Santa Clara county is quite wealthy.
