@@ -67,6 +67,31 @@ sc_edu_race <-
 ```
 
 ```{r}
+sc_edu_race %>% 
+  group_by(education, race) %>% 
+  summarize(estimate = sum(estimate)) %>% 
+  ggplot() +
+  geom_bar(
+    aes(
+      x = education %>% factor(levels = unique(sc_edu_race$education)),
+      y = estimate,
+      fill = race %>% factor(levels = unique(sc_edu_race$race))
+    ),
+    stat = "identity",
+    position = "stack"
+  ) +
+  labs(
+    x = "Educational attainment",
+    y = "Proportion of population 25 years and older",
+    title = "Santa Clara County education attainment by race",
+    fill = "Race"
+  ) +
+  theme(axis.text.x = element_text(angle = 90)) +
+  coord_flip()
+```
+
+
+```{r}
 sc_race_total <-
   sc_edu_race %>% 
   group_by(race) %>% 
