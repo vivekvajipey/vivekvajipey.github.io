@@ -12,12 +12,12 @@ library(tigris)
 library(sf)
 library(leaflet)
 
-Sys.setenv(CENSUS_KEY="c8aa67e4086b4b5ce3a8717f59faa9a28f611dab")
+Sys.setenv(CENSUS_KEY="67343486046933b2d74f13923ac153228348f817")
 ```
 
-Based on the results of our group's survey, food and water access and air conditioning access. To count the individuals facing food insecurity, the food stamp flag (FFSP) can be tracked, while water access can be represented by either the hot and cold running water flag (FRWATP) or the sink with a faucet allocation flag (FSINKP). In the filtering of the data set, the heat risk group selects individuals who either do not have running water or a sink with a faucet in order to account for a greater proportion of the water insecure population. Although access to air conditioning and other electrical services is an important factor in heat risk, it is unclear how the electric cost variable in the PUMS can be used to track electrical access. Thus, the household income (HINCP) variable is used to include households that may not have a robust electrical system to deal with heat risks.
+Based on the results of our group's survey, food/water access and air conditioning access have been identified as potential indicators of risk to extreme heat impacts. To count the individuals facing food insecurity, the food stamp flag (FFSP) can be tracked, while water access can be represented by either the hot and cold running water flag (FRWATP) or the sink with a faucet allocation flag (FSINKP). In the filtering of the data set, the heat risk group selects individuals who either do not have running water or a sink with a faucet in order to account for a greater proportion of the water insecure population. Although access to air conditioning and other electrical services is an important factor in heat risk, it is unclear how the electric cost variable in the PUMS can be used to track electrical access. Thus, the household income (HINCP) variable is used to include households that may not have a robust electrical system to deal with heat risks.
 
-Based on the sum of the rows that satisfy the conditions associated with the variables above, 15582 households should be considered to be at-risk of extreme heat impacts. Considering the Bay Area's population of 7.753 million, 15582 households seems to be a very small proportion. Based on this, the map could be interpretted to show populations that are truly at extreme levels of risk and assistance for them should be prioritized. For a visualization of a more broad group of households at risk, additional variables and conditions could be included in the ifelse statement using the | (OR) operator.
+Based on the sum of the rows that satisfy the conditions associated with the variables above, 15582 households should be considered to be at-risk of extreme heat impacts. Considering the Bay Area's population of 7.753 million, 15582 households seems to be a very small proportion. Based on this, the map could be interpreted to show populations that are truly at extreme levels of risk and assistance for them should be prioritized. For a visualization of a more broad group of households at risk, additional variables and conditions could be included in the ifelse statement using the | (OR) operator.
 
 ```{r include=FALSE}
 pums_1year_2019 <- getCensus(
@@ -114,8 +114,8 @@ bay_pums_heat_risk <-
   ) %>%
   group_by(PUMA) %>% 
   summarize(
-    perc_waterinsec_foodinsec_lowinc =
-      sum(waterinsec_foodinsec_lowinc, na.rm =T)/sum(WGTP, na.rm = T)*100
+    total_waterinsec_foodinsec_lowinc =
+      sum(waterinsec_foodinsec_lowinc, na.rm =T)
   ) %>% 
   left_join(
     bay_pumas %>% 
@@ -125,24 +125,24 @@ bay_pums_heat_risk <-
   st_as_sf()
 ```
 
-```{r}
+```{r warning=F}
 pums_pal <- colorNumeric(
   palette = "Reds",
-  domain = bay_pums_heat_risk$perc_waterinsec_foodinsec_lowinc
+  domain = bay_pums_heat_risk$total_waterinsec_foodinsec_lowinc
 )
 
 leaflet() %>%
   addTiles() %>% 
   addPolygons(
     data = bay_pums_heat_risk,
-    fillColor = ~pums_pal(perc_waterinsec_foodinsec_lowinc),
+    fillColor = ~pums_pal(total_waterinsec_foodinsec_lowinc),
     color = "white",
     opacity = 0.5,
     fillOpacity = 0.5,
     weight = 1,
     label = ~paste0(
-      round(perc_waterinsec_foodinsec_lowinc), 
-      "% with limited food and water access making less than $100K"
+      round(total_waterinsec_foodinsec_lowinc), 
+      "Number of people with limited food and water access making less than $100K"
     ),
     highlightOptions = highlightOptions(
       weight = 2,
@@ -152,7 +152,7 @@ leaflet() %>%
   addLegend(
     data = bay_pums_heat_risk,
     pal = pums_pal,
-    values = ~perc_waterinsec_foodinsec_lowinc,
-    title = "% with limited food and water access making less than $100K"
+    values = ~total_waterinsec_foodinsec_lowinc,
+    title = "Number of people with limited food and water access making less than $100K"
   )
 ```
