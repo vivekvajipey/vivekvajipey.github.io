@@ -1,0 +1,317 @@
+---
+title: "vivekvajipey_finalproject"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, warnings = F, messages = F)
+
+library(tidyverse)
+library(sf)
+library(tigris)
+library(leaflet)
+library(censusapi)
+library(mapview)
+library(readxl)
+library(RColorBrewer)
+library(plotly)
+
+Sys.setenv(CENSUS_KEY="67343486046933b2d74f13923ac153228348f817")
+```
+
+```{r include=FALSE}
+temp <- tempfile()
+download.file("https://oehha.ca.gov/media/downloads/calenviroscreen/document/calenviroscreen40resultsdatadictionaryf2021.zip",destfile = temp)
+
+ces4 <- read_excel("calenviroscreen40resultsdatadictionary_F_2021.xlsx", sheet = "CES4.0FINAL_results")
+```
+
+```{r include=FALSE}
+bay_county_names <-
+  c(
+    "Alameda",
+    "Contra Costa",
+    "Marin",
+    "Napa",
+    "San Francisco",
+    "San Mateo",
+    "Santa Clara",
+    "Solano",
+    "Sonoma"
+  )
+
+ca_tracts <- tracts("CA", cb = T, progress_bar = F)
+
+ces4_bay_gwthreats <-
+  ces4 %>% 
+  filter(`California County` %in% bay_county_names) %>% 
+  select(`Census Tract`, `Groundwater Threats`) %>% 
+  left_join(
+    ca_tracts %>% 
+      transmute(GEOID = as.numeric(GEOID)), 
+    by = c("Census Tract" = "GEOID")
+  ) %>% 
+  st_as_sf()
+```
+
+```{r}
+RdYlGn_rev <- rev(brewer.pal(11, "RdYlGn"))
+YlOrRd_rev <- rev(brewer.pal(11, "YlOrRd"))
+
+gwthreats_pal <- colorNumeric(
+  palette = "YlOrRd",
+  domain = ces4_bay_gwthreats$`Groundwater Threats`
+)
+
+leaflet() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+  addPolygons(
+    data = ces4_bay_gwthreats,
+    fillColor = ~gwthreats_pal(`Groundwater Threats`),
+    color = "white",
+    weight = 0.5,
+    fillOpacity = 0.5,
+    label = ~`Groundwater Threats`,
+  ) %>% 
+      addLegend(
+        data = ces4_bay_gwthreats,
+        pal = gwthreats_pal,
+        values = ~`Groundwater Threats`,
+        title = "Groundwater Threat Score in the Bay Area"
+      )
+```
+
+```{r include=FALSE}
+#California Central Valley
+cv_county_names <-
+  c(
+    "Butte", "Colusa", "Glenn", "Fresno", "Kern", "Kings", "Madera", "Merced", "Placer", "San Joaquin", "Sacramento", "Shasta", "Solano", "Stanislaus", "Sutter", "Tehama", "Tulare", "Yolo", "Yuba"
+  )
+
+ces4_cv_gwthreats <-
+  ces4 %>% 
+  filter(`California County` %in% cv_county_names) %>% 
+  select(`Census Tract`, `Groundwater Threats`) %>% 
+  left_join(
+    ca_tracts %>% 
+      transmute(GEOID = as.numeric(GEOID)), 
+    by = c("Census Tract" = "GEOID")
+  ) %>% 
+  st_as_sf()
+```
+
+```{r}
+leaflet() %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+  addPolygons(
+    data = ces4_cv_gwthreats,
+    fillColor = ~gwthreats_pal(`Groundwater Threats`),
+    color = "white",
+    weight = 0.5,
+    fillOpacity = 0.5,
+    label = ~`Groundwater Threats`,
+  ) %>% 
+      addLegend(
+        data = ces4_cv_gwthreats,
+        pal = gwthreats_pal,
+        values = ~`Groundwater Threats`,
+        title = "Groundwater Threat Score in the Central Valley"
+      )
+```
+
+```{r}
+bay_gwthreats_histo <- plot_ly(alpha = 0.5)
+bay_gwthreats_histo <- bay_gwthreats_histo %>% 
+  add_histogram(ces4_bay_gwthreats$`Groundwater Threats`, name = "Bay Area") %>% 
+  add_histogram(ces4_cv_gwthreats$`Groundwater Threats`, name = "Central Valley") %>% 
+  layout(
+    barmode = "overlay",
+    xaxis = list(
+      title = "Groundwater Threat Score",
+      fixedrange = T
+    ),
+    yaxis = list(
+      title = "Frequency",
+      fixedrange = T
+    ),
+    title = list(
+      text = "Groundwater Threat Score Frequency in the Bay Area"
+    )
+  ) %>% 
+  config(displayModeBar = F)
+
+bay_gwthreats_histo
+```
+
+
+```{r}
+bay_gwthreats_histo <-
+  plot_ly(
+    x = ces4_bay_gwthreats$`Groundwater Threats`,
+    type = "histogram",
+    marker = list(color = "#e9c46a")
+  ) %>% 
+  layout(
+    xaxis = list(
+      title = "Groundwater Threat Score",
+      fixedrange = T
+    ),
+    yaxis = list(
+      title = "Frequency",
+      fixedrange = T
+    ),
+    title = list(
+      text = "Groundwater Threat Score Frequency in the Bay Area"
+    )
+  ) %>% 
+  config(displayModeBar = F)
+
+bay_gwthreats_histo
+```
+
+```{r include=FALSE}
+census_race_categories <- 
+  c(
+    "White Alone",
+    "Black or African American",
+    "American Indian and Alaska Native Alone",
+    "Asian Alone",
+    "Native Hawaiian and Other Pacific Islander Alone",
+    "Some Other Race Alone",
+    "Two or More Races"
+  )
+
+bay_race_tracts <-
+  1:7 %>% 
+  map_dfr(function(x){
+    getCensus(
+      name = "acs/acs5",
+      vintage = 2019,
+      region = "tract:*",
+      regionin = "state:06+county:001,013,041,055,075,081,085,095,097",
+      vars = paste0("B19001",LETTERS[x],"_001E")
+    ) %>%
+      mutate(
+        tract = paste0(state, county, tract) %>% as.numeric(),
+        race = census_race_categories[x]
+      ) %>% 
+      select(
+        tract,
+        race,
+        estimate = paste0("B19001",LETTERS[x],"_001E")
+      )
+  })
+```
+
+```{r include=FALSE}
+bay_gwthreats_race <-
+  bay_race_tracts %>% 
+  left_join(
+    ces4_bay_gwthreats %>% 
+      st_drop_geometry(),
+    by = c("tract" = "Census Tract")
+  ) %>% 
+  mutate(
+    gwthreats_tier =
+      case_when(
+        `Groundwater Threats` <= 1 ~ "0-1",
+        `Groundwater Threats` <= 2 ~ "1-2",
+        `Groundwater Threats` <= 5 ~ "2-5",
+        `Groundwater Threats` <= 20 ~ "5-20",
+        `Groundwater Threats` <= 50 ~ "20-50",
+        `Groundwater Threats` <= 100 ~ "50-100",
+        TRUE ~ "100-550"
+      ) 
+  ) %>% 
+  group_by(race, gwthreats_tier) %>% 
+  summarize(estimate = sum(estimate, na.rm = T))
+```
+
+```{r include=FALSE}
+bay_gwthreats_race_stacked <-
+  bay_gwthreats_race %>% 
+  group_by(gwthreats_tier, race) %>% 
+  summarize(estimate = sum(estimate)) %>% 
+  rbind(
+    bay_gwthreats_race %>% 
+      group_by(race) %>% 
+      summarize(estimate = sum(estimate)) %>% 
+      mutate(gwthreats_tier = "Total")
+  ) %>% 
+  ggplot() +
+  geom_bar(
+    aes(
+      x = gwthreats_tier %>% factor(levels = rev(c("Total","0-1","1-2","2-5","5-20","20-50","50-100","100-550"))),
+      y = estimate,
+      fill = race %>% factor(levels = rev(census_race_categories))
+    ),
+    stat = "identity",
+    position = "stack"
+  ) +
+  labs(
+    x = "Groundwater Threat Score",
+    y = "Number of Households",
+    title = "Bay Area Groundwater Threat Score by Race",
+    subtitle = "Sum of weighted scores for sites within each census tract,\naggregated by Census tract",
+    fill = "Race of householder"
+  ) +
+  coord_flip() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "vertical"
+  ) +
+  guides(
+    fill = guide_legend(
+      reverse = T
+    )
+  )
+```
+
+```{r include=FALSE}
+bay_gwthreats_race_fill <-
+  bay_gwthreats_race %>% 
+  group_by(gwthreats_tier, race) %>% 
+  summarize(estimate = sum(estimate)) %>% 
+  rbind(
+    bay_gwthreats_race %>% 
+      group_by(race) %>% 
+      summarize(estimate = sum(estimate)) %>% 
+      mutate(gwthreats_tier = "Total")
+  ) %>% 
+  ggplot() +
+  geom_bar(
+    aes(
+      x = gwthreats_tier %>% factor(levels = rev(c("Total","0-1","1-2","2-5","5-20","20-50","50-100","100-550"))),
+      y = estimate,
+      fill = race %>% factor(levels = rev(census_race_categories))
+    ),
+    stat = "identity",
+    position = "fill"
+  ) +
+  labs(
+    x = "Groundwater Threat Score",
+    y = "Proportion of Households",
+    title = "Bay Area Groundwater Threat Score by Race",
+    subtitle = "Sum of weighted scores for sites within each census tract,\naggregated by Census tract",
+    fill = "Race of householder"
+  ) +
+  coord_flip() +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "vertical"
+  ) +
+  guides(
+    fill = guide_legend(
+      reverse = T
+    )
+  )
+```
+
+```{r}
+bay_gwthreats_race_stacked
+```
+
+```{r}
+bay_gwthreats_race_fill
+```
+
