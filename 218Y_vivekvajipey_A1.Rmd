@@ -1,0 +1,696 @@
+---
+title: "218Y_vivekvajipey_A1"
+output: html_document
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, warning = F, message = F)
+
+library(tidyverse)
+library(esri2sf)
+library(tigris)
+library(sf)
+library(leaflet)
+library(tidycensus)
+library(censusapi)
+library(ggplot2)
+
+census_api_key("67343486046933b2d74f13923ac153228348f817")
+Sys.setenv(CENSUS_KEY="67343486046933b2d74f13923ac153228348f817")
+epa_zoning <- esri2sf("https://services8.arcgis.com/0IC8hha3hgQkmGoa/arcgis/rest/services/EastPaloAltoZoning_2021_WFL1/FeatureServer/1")
+smc_exemption <- read_csv("https://datahub.smcgov.org/api/views/pmvw-bs84/rows.csv?accessType=DOWNLOAD")
+```
+
+Over the last decades, many regions of the Bay Area have continued to gain notoriety for their high housing prices. Due to the city’s close proximity to the technological innovation of Silicon Valley, the housing situation in East Palo Alto demonstrates the effects of these developments. Recently, the East Palo Alto Opportunity to Purchase Act (OPA) was proposed as a legislative solution to counteract the displacement of East Palo Alto residents while also providing supposedly more affordable options for renters and homeowners. The Act is designed in the hope that East Palo Alto can permanently provide these lower-cost opportunities for multiple generations, especially for first-time homeowners and low-income families. The details of the Opportunity to Purchase Act, such as the new purchasing procedures and exceptions, can be viewed in the official ordinance document.
+
+In response, there have been vibrant discussions both in support of and opposed to the act throughout the East Palo Alto community. In November and December of 2021, virtual community meetings were held to discuss the implications of the OPA for the city’s residents. Many shared sentiments of weariness and dissatisfaction with the act’s current form, with a common theme being that the residents were unconvinced that the benefits of the OPA decisively outweigh its potential drawbacks. The meeting attendees expressed concern with aspects such as the prolonged timeline for housing transactions, the projected lowering of property values, the loss in tax revenue, and the handling of ADUs. Overall, skeptics of the OPA are not convinced that the act will be able to resolve the issues of displacement and affordability while providing a net benefit to the residents.
+
+In this report, we have provided data visualizations and statistics relevant to the East Palo Alto housing situation. These results can provide valuable insights regarding the real-world context for the Opportunity to Purchase Act. In all of East Palo Alto, 59% of households are renter-occupied and 41% of households are owner-occupied. Since many of the debates surrounding the OPA involve differences between renters and homeowners, the trends in statistics involving owner type are of particular interest.
+
+One crucial statistic that can be used to characterize the economic situation of housing occupants is the proportion of housing costs (rent or owner costs) to income, expressed as a percent. Conventionally, households are considered moderately burdened by housing when costs lie between 30% and 50% of income and are severely burdened by housing costs that exceed 50% of income. 
+
+The graphs below display the frequencies of housing burden for each income level as a percentage of total population for the respective income level. The first graph displays the results for all households while the next two represent renter-occupied and owner-occupied households, respectively.
+
+```{r include=FALSE}
+acs_vars_2019_5yr <-
+  listCensusMetadata(
+    name = "2019/acs/acs5",
+    type = "variables"
+  )
+
+epa_income_renter_perc_total <- 
+  getCensus(
+    name = "acs/acs5",
+    vintage = 2019, 
+    vars = "group(B25074)", 
+    region = "place:*",
+    regionin = "state:06"
+  ) %>% 
+  filter(
+    place == "20956"
+  ) %>% 
+  select(!c(state, place, NAME, GEO_ID) & !ends_with(c("EA","MA","M"))) %>%
+  pivot_longer(
+    ends_with("E"),
+    names_to = "variable",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    acs_vars_2019_5yr %>% 
+      select(name, label), 
+    by = c("variable" = "name")
+  ) %>% 
+  select(-variable) %>% 
+  separate(
+    label,
+    into = c(NA,NA,"income","housing_perc"),
+    sep = "!!"
+  ) %>% 
+  filter(!is.na(housing_perc)) %>% 
+  mutate(
+    type = "renter"
+  )
+```
+
+```{r include=FALSE}
+epa_income_owner_perc_total <- 
+  getCensus(
+    name = "acs/acs5",
+    vintage = 2019, 
+    vars = "group(B25095)", 
+    region = "place:*",
+    regionin = "state:06"
+  ) %>% 
+  filter(
+    place == "20956"
+  ) %>% 
+  select(!c(state, place, NAME, GEO_ID) & !ends_with(c("EA","MA","M"))) %>%
+  pivot_longer(
+    ends_with("E"),
+    names_to = "variable",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    acs_vars_2019_5yr %>% 
+      select(name, label), 
+    by = c("variable" = "name")
+  ) %>% 
+  select(-variable) %>% 
+  separate(
+    label,
+    into = c(NA,NA,"income","housing_perc"),
+    sep = "!!"
+  ) %>% 
+  filter(!is.na(housing_perc)) %>% 
+  mutate(
+    type = "owner"
+  )
+```
+
+```{r include=FALSE}
+burdened_perc <- c("30.0 to 34.9 percent", "35.0 to 39.9 percent", "40.0 to 49.9 percent", "50.0 percent or more")
+
+epa_income_housing_perc_total <- 
+  epa_income_renter_perc_total %>% 
+  rbind(
+    epa_income_owner_perc_total
+  ) %>% 
+  filter(
+    housing_perc != "Not computed"
+  ) %>% 
+  mutate(
+    burden_level = ifelse(
+      housing_perc %in% burdened_perc,
+      ifelse(
+        burdened_perc == "50.0 percent or more",
+        "Severe: Housing costs exceed 50% of income",
+        "Moderate: Housing costs are between 30% and 50% of income"
+      ),
+      "Mild: Housing costs are under 30% of income"
+    )
+  ) %>% 
+  mutate(
+    income = ifelse(
+      income %in% c("$100,000 to $149,999:", "$150,000 or more:"),
+      "$100,000 or more:",
+      income
+    )
+  )
+```
+
+```{r include=FALSE}
+epa_income_housing_summarized <-
+  epa_income_housing_perc_total %>% 
+  select(
+    -type
+  ) %>% 
+  group_by(income, housing_perc, burden_level) %>% 
+  summarize(
+    estimate = sum(estimate, na.rm = T)
+  ) %>% 
+  group_by(income) %>% 
+  mutate(
+    income_lvl_perc = estimate / sum(estimate) * 100
+  ) %>% 
+  group_by(income, burden_level)%>% 
+  summarize(
+    estimate = sum(estimate, na.rm = T),
+    income_lvl_perc = sum(income_lvl_perc, na.rm = T)
+  )
+```
+
+```{r include=FALSE}
+epa_income_housing_chart <-
+  epa_income_housing_summarized %>% 
+  ggplot(
+    aes(fill=burden_level, 
+        y=income_lvl_perc, 
+        x=income %>% factor(levels = (c("Less than $10,000:","$10,000 to $19,999:","$20,000 to $34,999:","$35,000 to $49,999:","$50,000 to $74,999:","$75,000 to $99,999:","$100,000 or more:"))))
+    ) + 
+  geom_bar(position="fill", stat="identity") +
+  labs(
+    x = "Income Level" ,
+    y = "Proportion of Households",
+    title = "Housing Burden at Varying Income Levels in East Palo Alto",
+    fill = "Housing Burden Level"
+  ) +
+  scale_fill_manual(values = rev(c("#9d0208", "#e85d04", "#ffba08"))) +
+  theme(
+    axis.text.x = element_text(
+      angle = 90, 
+      vjust = 0.5,
+      hjust=1
+    )
+  )
+```
+
+```{r}
+epa_income_housing_chart
+```
+
+Generally, it appears that the proportion of mild or unburdened households increases with increasing income level, with a staggering 87% of households in the highest income level paying less than 30% of their income in housing costs. Conversely, the graph shows that over 70% of households in each of the lowest three income levels experience moderate housing burden. It is interesting to see the spikes in severe housing burden for the $35,000 to $49,999 and $50,000 to $74,999 income levels. In all of East Palo Alto, it is interesting to note that 67% of the severely burdened households are renters and 33% are owners, which may indicate why owners are generally less concerned with the housing affordability aspect of the OPA.
+
+```{r include=FALSE}
+# of households in highest income bracket that is mild burdened
+(epa_income_housing_perc_total %>% 
+  filter((burden_level == "Mild: Housing costs are under 30% of income") & (income == "$100,000 or more:")) %>% 
+  pull(estimate) %>% 
+  sum()) /
+  (epa_income_housing_perc_total %>% 
+  filter(income == "$100,000 or more:") %>% 
+  pull(estimate) %>% 
+  sum()) * 100
+```
+```{r include=FALSE}
+# of households in lowest income bracket that is moderately burdened
+(epa_income_housing_perc_total %>% 
+  filter((burden_level == "Moderate: Housing costs are between 30 and 50% of income") & (income == "Less than $10,000:")) %>% 
+  pull(estimate) %>% 
+  sum()) /
+  (epa_income_housing_perc_total %>% 
+  filter(income == "Less than $10,000:") %>% 
+  pull(estimate) %>% 
+  sum()) * 100
+```
+
+```{r include=FALSE}
+# of households in lowest income bracket that is moderately burdened
+(epa_income_housing_perc_total %>% 
+  filter((burden_level == "Moderate: Housing costs are between 30 and 50% of income") & (income == "Less than $10,000:")) %>% 
+  pull(estimate) %>% 
+  sum()) /
+  (epa_income_housing_perc_total %>% 
+  filter(income == "Less than $10,000:") %>% 
+  pull(estimate) %>% 
+  sum()) * 100
+```
+
+```{r include=FALSE}
+# of households in lowest income bracket that is moderately burdened
+(epa_income_housing_perc_total %>% 
+  filter((burden_level == "Moderate: Housing costs are between 30 and 50% of income") & (income == "$10,000 to $19,999:")) %>% 
+  pull(estimate) %>% 
+  sum()) /
+  (epa_income_housing_perc_total %>% 
+  filter(income == "$10,000 to $19,999:") %>% 
+  pull(estimate) %>% 
+  sum()) * 100
+```
+
+```{r include=FALSE}
+# of households in lowest income bracket that is moderately burdened
+(epa_income_housing_perc_total %>% 
+  filter((burden_level == "Moderate: Housing costs are between 30 and 50% of income") & (income == "$20,000 to $34,999:")) %>% 
+  pull(estimate) %>% 
+  sum()) /
+  (epa_income_housing_perc_total %>% 
+  filter(income == "$20,000 to $34,999:") %>% 
+  pull(estimate) %>% 
+  sum()) * 100
+```
+
+```{r include=FALSE}
+epa_income_renter_summarized <-
+  epa_income_housing_perc_total %>% 
+  filter(
+    type == "renter"
+  ) %>% 
+  select(
+    -type
+  ) %>% 
+  group_by(income, housing_perc, burden_level) %>% 
+  summarize(
+    estimate = sum(estimate, na.rm = T)
+  ) %>% 
+  group_by(income) %>% 
+  mutate(
+    income_lvl_perc = estimate / sum(estimate) * 100
+  ) %>% 
+  group_by(income, burden_level)%>% 
+  summarize(
+    estimate = sum(estimate, na.rm = T),
+    income_lvl_perc = sum(income_lvl_perc, na.rm = T)
+  )
+
+epa_income_renter_chart <-
+  epa_income_renter_summarized %>% 
+  ggplot(
+    aes(fill=burden_level, 
+        y=income_lvl_perc, 
+        x=income %>% factor(levels = (c("Less than $10,000:","$10,000 to $19,999:","$20,000 to $34,999:","$35,000 to $49,999:","$50,000 to $74,999:","$75,000 to $99,999:","$100,000 or more:"))))
+    ) + 
+  geom_bar(position="fill", stat="identity") +
+  labs(
+    x = "Income Level" ,
+    y = "Proportion of Households",
+    title = "Housing Burden for Renter-occupied Households at Varying \nIncome Levels in East Palo Alto",
+    fill = "Housing Burden Level"
+  ) +
+  scale_fill_manual(values = rev(c("#9d0208", "#e85d04", "#ffba08"))) +
+  theme(
+    axis.text.x = element_text(
+      angle = 90, 
+      vjust = 0.5,
+      hjust=1
+    )
+  )
+```
+
+```{r include=FALSE}
+epa_income_owner_summarized <-
+  epa_income_housing_perc_total %>% 
+  filter(
+    type == "owner"
+  ) %>% 
+  select(
+    -type
+  ) %>% 
+  group_by(income, housing_perc, burden_level) %>% 
+  summarize(
+    estimate = sum(estimate, na.rm = T)
+  ) %>% 
+  group_by(income) %>% 
+  mutate(
+    income_lvl_perc = estimate / sum(estimate) * 100
+  ) %>% 
+  group_by(income, burden_level)%>% 
+  summarize(
+    estimate = sum(estimate, na.rm = T),
+    income_lvl_perc = sum(income_lvl_perc, na.rm = T)
+  )
+
+epa_income_owner_chart <-
+  epa_income_owner_summarized %>% 
+  ggplot(
+    aes(fill=burden_level, 
+        y=income_lvl_perc, 
+        x=income %>% factor(levels = (c("Less than $10,000:","$10,000 to $19,999:","$20,000 to $34,999:","$35,000 to $49,999:","$50,000 to $74,999:","$75,000 to $99,999:","$100,000 or more:"))))
+    ) + 
+  geom_bar(position="fill", stat="identity") +
+  labs(
+    x = "Income Level" ,
+    y = "Proportion of Households",
+    title = "Housing Burden for Owner-occupied Households at Varying \nIncome Levels in East Palo Alto",
+    fill = "Housing Burden Level"
+  ) +
+  scale_fill_manual(values = rev(c("#9d0208", "#e85d04", "#ffba08"))) +
+  theme(
+    axis.text.x = element_text(
+      angle = 90, 
+      vjust = 0.5,
+      hjust=1
+    )
+  )
+```
+
+```{r}
+epa_income_renter_chart
+```
+
+Renter-occupied households follow the same trend with increasing income generally corresponding with higher proportions of mild housing burden. The severe housing burden spikes are also exhibited at the same income levels while the greatest proportion of moderate burden is similarly found at the $20,000 to $34,999 income level.
+
+```{r}
+epa_income_owner_chart
+```
+
+The graph for owner-occupied households differs from the other two graphs in a few main ways. Most prominently, all 41 homeowners earning “Less than $10,000" experienced severe housing burden. This statistic is sensible, considering that it would be very difficult to purchase a property for less than 50% of an income less than $10,000. In the income levels spanning from $10,000 to $49,999, there are no households that are severely burdened. However, the spike in severe burden emerges at the $50,000 to $74,999 level.
+
+```{r include = FALSE}
+# overall % of renter-occupied units
+(epa_income_housing_perc_total %>% 
+  filter(type == "renter") %>% 
+  pull(estimate) %>% 
+  sum()) /
+  (epa_income_housing_perc_total %>% 
+  pull(estimate) %>% 
+  sum()) * 100
+```
+
+```{r include = FALSE}
+# overall % of owner-occupied units
+(epa_income_housing_perc_total %>% 
+  filter(type == "owner") %>% 
+  pull(estimate) %>% 
+  sum()) /
+  (epa_income_housing_perc_total %>% 
+  pull(estimate) %>% 
+  sum()) * 100
+```
+
+```{r include = FALSE}
+# what % of severely burdened households are renter households?
+(epa_income_housing_perc_total %>% 
+  filter((housing_perc == "50.0 percent or more") & (type == "renter")) %>% 
+  pull(estimate) %>% 
+  sum()) /
+  (epa_income_housing_perc_total %>% 
+   filter(housing_perc == "50.0 percent or more") %>%
+  pull(estimate) %>% 
+  sum()) * 100
+```
+
+```{r include = FALSE}
+# what % of severely burdened households are owner households?
+(epa_income_housing_perc_total %>% 
+  filter((housing_perc == "50.0 percent or more") & (type == "owner")) %>% 
+  pull(estimate) %>% 
+  sum()) /
+  (epa_income_housing_perc_total %>% 
+   filter(housing_perc == "50.0 percent or more") %>%
+  pull(estimate) %>% 
+  sum()) * 100
+```
+
+```{r include = FALSE}
+# renter percentage for the highest income bracket
+(epa_income_housing_perc_total %>% 
+  filter((income == "$100,000 or more:") & (type == "renter")) %>%
+  pull(estimate) %>% 
+  sum()) /
+  (epa_income_housing_perc_total %>% 
+   filter(income == "$100,000 or more:") %>%
+  pull(estimate) %>% 
+  sum()) * 100
+```
+
+```{r include = FALSE}
+# owner percentage for the highest income bracket
+(epa_income_housing_perc_total %>% 
+  filter((income == "$100,000 or more:") & (type == "owner")) %>%
+  pull(estimate) %>% 
+  sum()) /
+  (epa_income_housing_perc_total %>% 
+   filter(income == "$100,000 or more:") %>%
+  pull(estimate) %>% 
+  sum()) * 100
+```
+
+```{r include = FALSE}
+epa_tracts <- c("611900", "612000", "611800")
+
+epa_income_rent_perc <-
+  getCensus(
+    name = "acs/acs5",
+    vintage = 2019,
+    region = "block group:*", 
+    regionin = "state:06+county:081",
+    vars = "group(B25074)"
+  ) %>%
+  filter(
+    tract %in% epa_tracts
+  ) %>%
+  mutate(
+    `census block group` =
+      paste0(state,county,tract,block_group)
+  ) %>% 
+  select(!c(GEO_ID,state,county,tract,block_group,NAME) & !ends_with(c("EA","MA","M"))) %>%
+  pivot_longer(
+    ends_with("E"),
+    names_to = "variable",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    acs_vars_2019_5yr %>% 
+      select(name, label), 
+    by = c("variable" = "name")
+  ) %>% 
+  select(-variable) %>% 
+  separate(
+    label,
+    into = c(NA,NA,"income","rent_perc"),
+    sep = "!!"
+  ) %>% 
+  filter(!is.na(rent_perc))
+```
+
+```{r include = FALSE}
+burden_threshold <- 0.3
+
+epa_burdened_cbgs <- 
+  epa_income_rent_perc %>% 
+  mutate(
+    burdened = ifelse(
+      rent_perc %in% burdened_perc,
+      estimate,
+      NA
+    ),
+    burden = ifelse(
+      rent_perc %in% burdened_perc,
+      ifelse(
+        burdened_perc == "50.0 percent or more",
+        "severe",
+        "moderate"
+      ),
+      "mild"
+    )
+  ) %>% 
+  group_by(`census block group`) %>% 
+  summarize(
+    burdened = sum(burdened, na.rm = T),
+    total_pop = sum(estimate, na.rm = T)
+  ) %>% 
+  mutate(
+    percent_burdened = burdened/total_pop*100
+  ) %>% 
+  filter(!is.na(percent_burdened))
+
+epa_severely_burdened_cbgs <- 
+  epa_income_rent_perc %>% 
+  mutate(
+    severely_burdened = ifelse(
+      rent_perc == "50.0 percent or more",
+      estimate,
+      NA
+    )
+  ) %>% 
+  group_by(`census block group`) %>% 
+  summarize(
+    severely_burdened = sum(severely_burdened, na.rm = T),
+    total_pop = sum(estimate, na.rm = T)
+  ) %>% 
+  mutate(
+    percent_severely_burdened = severely_burdened/total_pop*100
+  ) %>% 
+  filter(!is.na(percent_severely_burdened))
+```
+
+The two maps below visualize the percentage of burdened and severely burdened renter households in each census block group in East Palo Alto. (Note: ACS 5-year data for housing burden is not available at the census block group level)
+
+```{r}
+smc_blockgroups <- block_groups("CA", "San Mateo", cb = T, progress_bar = F)
+
+burdened_pal <- colorNumeric(
+  palette = "Oranges",
+  domain = 
+    epa_burdened_cbgs$percent_burdened
+)
+
+leaflet() %>% 
+  addProviderTiles(provider = providers$CartoDB.Positron) %>% 
+  addPolygons(
+    data = 
+      epa_burdened_cbgs %>% 
+        left_join(
+          smc_blockgroups %>% select(GEOID), 
+          by = c(`census block group` = "GEOID")
+        ) %>% 
+        st_as_sf(),
+    fillColor = ~burdened_pal(percent_burdened),
+    color = "white",
+    opacity = 0.5,
+    fillOpacity = 0.75,
+    weight = 1,
+    label = ~paste0(
+      round(percent_burdened), 
+      "% paying more than 30% of income on rent in census block group ",
+      `census block group`
+    ),
+    highlightOptions = highlightOptions(
+      weight = 2,
+      opacity = 1
+    )
+  ) %>% 
+  addLegend(
+    data = epa_burdened_cbgs,
+    pal = burdened_pal,
+    values = ~percent_burdened,
+    title = "Burdened Renter Households in East Palo Alto"
+  )
+```
+
+Block group 060816120003 in the west portion of East Palo Alto has 100% of the 117 households experiencing housing burden.
+
+```{r}
+severely_burdened_pal <- colorNumeric(
+  palette = "Reds",
+  domain = 
+    epa_severely_burdened_cbgs$percent_severely_burdened
+)
+
+leaflet() %>% 
+  addProviderTiles(provider = providers$CartoDB.Positron) %>% 
+  addPolygons(
+    data = 
+      epa_severely_burdened_cbgs %>% 
+        left_join(
+          smc_blockgroups %>% select(GEOID), 
+          by = c(`census block group` = "GEOID")
+        ) %>% 
+        st_as_sf(),
+    fillColor = ~severely_burdened_pal(percent_severely_burdened),
+    color = "white",
+    opacity = 0.5,
+    fillOpacity = 0.75,
+    weight = 1,
+    label = ~paste0(
+      round(percent_severely_burdened), 
+      "% paying more than 50% of income on rent in census block group ",
+      `census block group`
+    ),
+    highlightOptions = highlightOptions(
+      weight = 2,
+      opacity = 1
+    )
+  ) %>% 
+  addLegend(
+    data = epa_severely_burdened_cbgs,
+    pal = severely_burdened_pal,
+    values = ~percent_severely_burdened,
+    title = "Severely Burdened Renter Households in East Palo Alto"
+  )
+```
+
+Block group 060816120004 in the central portion of East Palo Alto has 58% of the 88 households experiencing severe housing burden.
+
+
+```{r include=FALSE}
+epa_zoning <- esri2sf("https://services8.arcgis.com/0IC8hha3hgQkmGoa/arcgis/rest/services/EastPaloAltoZoning_2021_WFL1/FeatureServer/1")
+
+smc_exemption <- read_csv("https://datahub.smcgov.org/api/views/pmvw-bs84/rows.csv?accessType=DOWNLOAD")
+```
+
+```{r include=FALSE}
+epa_exemption <- smc_exemption %>% 
+  mutate(
+    APN = `Parcel Number` %>% 
+      str_replace_all("-","")
+  ) %>% 
+  filter(APN %in% epa_zoning$APN) %>% 
+  left_join(epa_zoning) %>% 
+  st_as_sf() %>% 
+  filter(New_Zone == "R-LD")
+```
+
+```{r include=FALSE}
+value <- epa_exemption %>% 
+  st_drop_geometry() %>% 
+  mutate(`Owner Type` = ifelse(Exemption %in% c(5600,7000), "Homeowner", "Renter")) %>% 
+  group_by(`Fiscal Year`, `Owner Type`) %>% 
+  summarise(`Average Value` = mean(`Assessed Value`))
+```
+
+```{r}
+ggplot(value, aes(x = `Fiscal Year`, y = `Average Value`, fill = `Owner Type`)) +
+  geom_col(position = "dodge") +
+  labs(title = "Housing Value Change Over Time in East Palo Alto")
+```
+
+The graph above represents the steady increase in housing values in East Palo Alto from 2015 to 2019, which corroborates the claims made to justify the need for the OPA as a counteractive measure.
+
+```{r include=FALSE}
+homeownerCountByYear <- epa_exemption %>% 
+  st_drop_geometry() %>% 
+  filter(Exemption %in% c(5600,7000)) %>%
+  group_by(`Fiscal Year`) %>% 
+  summarise(Frequency = n()) %>%
+  mutate(`Owner Type` = "Homeowner")
+
+renterCountByYear <- epa_exemption %>% 
+  st_drop_geometry() %>% 
+  filter(!Exemption %in% c(5600,7000)) %>%
+  group_by(`Fiscal Year`) %>% 
+  summarise(Frequency = n()) %>%
+  mutate(`Owner Type` = "Renter")
+
+ownerType <- homeownerCountByYear %>% 
+  rbind(renterCountByYear) %>% 
+  group_by(`Fiscal Year`) %>% 
+  mutate(Share = Frequency / sum(Frequency))
+```
+
+```{r}
+ggplot(ownerType, aes(x = `Fiscal Year`, y = Share, fill = `Owner Type`)) +
+  geom_col() +
+  geom_hline(aes(yintercept = .5), linetype = 2) +
+  labs(title = "Proportion of Owner Type Per Year")
+
+```
+
+The graph above is demonstrating the gradual increase in renter-occupied households from 2015 to 2019. As indicated by the data previously presented, renters constitute a large portion of burdened households in East Palo Alto. Thus, as these trends continue, it is increasingly important for policies to be made with the interests of renters in mind.
+
+```{r}
+leaflet() %>% 
+  addProviderTiles(provider = providers$CartoDB.Positron) %>% 
+  addPolygons(
+    data = epa_exemption %>% 
+      filter(`Fiscal Year` == "2018/2019"),
+    fillColor = "#F8766D",
+    color = "black",
+    weight = 0.5,
+    fillOpacity = 1
+  ) %>% 
+  addPolygons(
+    data = epa_exemption %>% 
+      filter(`Fiscal Year` == "2018/2019") %>% 
+      filter(!Exemption %in% c(5600,7000)),
+    fillColor = "#00BFC4",
+    color = "black",
+    weight = 0.5,
+    fillOpacity = 1
+  ) %>% 
+  addLegend(position = "topright", colors = c("#F8766D", "#00BFC4"), labels = c("Homeowner", "Renter"), opacity = 1, title = "Owner Type")
+```
+
+This map plots the distribution of renters and homeowners throughout East Palo Alto. Overall, there seems to be an even spread of both homeowners and renters throughout the city, which indicates that the effects of the OPA on either renters or homeowners will be exhibited in all areas of the city.
