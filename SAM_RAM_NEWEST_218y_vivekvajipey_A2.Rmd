@@ -1,0 +1,924 @@
+---
+title: "218y_vivekvajipey_A2"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(sf)
+library(tigris)
+library(censusapi)
+library(mapview)
+library(leaflet)
+library(mapboxapi)
+
+Sys.setenv(CENSUS_KEY="67343486046933b2d74f13923ac153228348f817")
+mb_access_token("pk.eyJ1IjoidnZhamlwZXkiLCJhIjoiY2t5dWxpN2xuMW9yYjJubnVrY2trdGF4ZCJ9.v4iJv_62J6JLt2rHxP-QTQ", install = T, overwrite = TRUE)
+```
+
+```{r}
+path <- "/Volumes/GoogleDrive/Shared drives/SFBI/Data Library/NHTS/nhts17-caltrans-tsdc-download/"
+pois <- st_read("/Volumes/GoogleDrive/Shared drives/SFBI/Data Library/OSM/gis_osm_pois_a_free_1.shp")
+```
+
+```{r}
+pois_summary <- pois %>% 
+  st_drop_geometry() %>% 
+  group_by(fclass) %>% 
+  count() %>% 
+  arrange(desc(n))
+
+pois_summary
+```
+
+```{r}
+cc_boundary <- counties("CA") %>% 
+  filter(NAME == "Contra Costa") %>% 
+  st_transform(st_crs(pois))
+
+# will take longer but handles larger POIs better
+cc_pois <- pois %>% 
+  .[cc_boundary,] %>% 
+  rename(amenity = fclass)
+```
+
+```{r}
+mapview(cc_pois, zcol = "amenity")
+```
+
+```{r}
+pois_filter <- pois %>% 
+  rename(amenity = fclass) %>% 
+  filter(amenity %in% c(
+    "supermarket",
+    "convenience",
+    "restaurant",
+    "school",
+    "park",
+    "hospital",
+    "doctors",
+    "dentist",
+    "library",
+    "sports_centre",
+    "swimming_pool",
+    "pharmacy"
+  ))
+
+mapview(pois_filter, zcol = "amenity")
+```
+
+```{r}
+saveRDS(pois_filter, "pois_filter.rds")
+pois_filter <- readRDS("pois_filter.rds")
+```
+
+```{r}
+cc_blocks <- blocks("CA","Contra Costa") %>% 
+```
+
+```{r}
+san_ram_boundary <- places("CA") %>% 
+  filter(NAME == "San Ramon")
+
+san_ram_blocks <- cc_blocks %>% 
+  st_centroid() %>% 
+  .[san_ram_boundary, ] %>% 
+  st_drop_geometry() %>% 
+  left_join(cc_blocks %>% select(GEOID10)) %>% 
+  st_as_sf()
+
+mapview(san_ram_blocks)
+```
+
+```{r}
+saveRDS(san_ram_blocks, "san_ram_blocks.rds")
+san_ram_blocks <- readRDS("san_ram_blocks.rds")
+```
+
+```{r}
+san_ram_isochrones <- c("walking","driving") %>%
+  map_dfr(function(x){
+
+    mb_isochrone(
+      san_ram_blocks,
+      profile = x,
+      time = c(5,10,15)
+    ) %>%
+      mutate(mode = x)
+
+  })
+```
+
+```{r}
+saveRDS(san_ram_isochrones, "san_ram_isochrones.rds")
+san_ram_isochrones <- readRDS("san_ram_isochrones.rds")
+```
+
+```{r}
+san_ram_access_raw <- san_ram_isochrones %>% 
+  st_make_valid() %>%
+  st_join(pois_filter) %>% 
+  filter(!is.na(osm_id)) %>% 
+  st_drop_geometry()
+```
+
+```{r}
+times = seq(0,60,by = 0.1)
+sigmoid_mode_func <- function(x, reasonableTime, b) {
+  a = log((1/(1-b))-1)
+  decay = (log((1/(0.5-b))-1)-a)/reasonableTime
+  return(1/(1+exp(x*decay+a)) + b)
+}
+```
+
+```{r}
+timeData = data.frame(Time = times, Value = sigmoid_mode_func(times, 20, 0.05))
+
+timeData %>% 
+ggplot(aes(x = Time, y = Value)) +
+  geom_line(col = "darkblue") + 
+  labs(title = "Value vs Time with a Reasonable Time of 20 Minutes", x = "Time (Minutes)") +
+  theme_minimal()
+```
+
+```{r}
+amenity_preference <- data.frame(
+  amenity = c(
+    "supermarket",
+    "convenience",
+    "restaurant",
+    "school",
+    "park",
+    "hospital",
+    "doctors",
+    "dentist",
+    "library",
+    "sports_centre",
+    "swimming_pool",
+    "pharmacy"
+  ),
+  amenity_value = c(
+    1,
+    0.8,
+    0.3,
+    0.7,
+    0.5,
+    0.7,
+    0.5,
+    0.5,
+    0.2,
+    0.5,
+    0.1,
+    0.6
+  ),
+  amenity_quantity = c(
+    2,
+    5,
+    20,
+    3,
+    2,
+    1,
+    1,
+    1,
+    1,
+    2,
+    2,
+    3
+  )
+) %>% 
+  mutate(
+    amenity_decay = -log(0.5)/(amenity_quantity)
+  )
+
+mode_preference <- data.frame(
+  mode = c(
+    "walking",
+    "biking",
+    "driving"
+  ),
+  mode_value = c(
+    1,
+    0.85,
+    0.5
+  ),
+  mode_reasonable = c(
+    12,
+    20,
+    30
+  )
+)
+```
+
+```{r}
+san_ram_complete_temp <- san_ram_access_raw %>% 
+  left_join(
+    amenity_preference,
+    by = "amenity"
+  ) %>% 
+  left_join(
+    mode_preference,
+    by = "mode"
+  ) %>% 
+  group_by(id,mode,amenity) %>% 
+  arrange(time) %>% 
+  mutate(
+    amenity_rank = row_number() - 1
+  ) %>% 
+  ungroup()
+```
+
+```{r}
+complete_baseline <- data.frame(
+  amenity = amenity_preference$amenity %>% 
+    rep(amenity_preference$amenity_quantity)
+  ) %>% 
+  left_join(
+    amenity_preference,
+    by = "amenity"
+  ) %>% 
+  group_by(amenity) %>% 
+  mutate(
+    amenity_rank = row_number() - 1
+  ) %>% 
+  ungroup() %>% 
+  mutate(
+    score = amenity_value * exp(-amenity_rank * amenity_decay) * 0.5
+  )
+```
+
+```{r}
+san_ram_complete_modes <- san_ram_complete_temp %>% 
+  mutate(
+    score = amenity_value * exp(-amenity_rank * amenity_decay) * sigmoid_mode_func(time, mode_reasonable, 0.05)
+  ) %>% 
+  group_by(id, mode) %>% 
+  arrange(desc(score)) %>% 
+  filter(!duplicated(osm_id)) %>%
+  summarize(
+    score = sum(score, na.rm=T)/sum(complete_baseline$score)
+  )
+```
+
+```{r}
+san_ram_complete_total <- san_ram_complete_temp %>% 
+  mutate(
+    score = amenity_value * exp(-amenity_rank * amenity_decay) * mode_value * sigmoid_mode_func(time, mode_reasonable, 0.05)
+  ) %>% 
+  group_by(id) %>% 
+  arrange(desc(score)) %>% 
+  filter(!duplicated(osm_id)) %>% 
+  summarize(
+    score = sum(score, na.rm = T)/sum(complete_baseline$score)
+  ) %>% 
+  mutate(mode = "total")
+```
+
+```{r}
+san_ram_complete <- rbind(
+  san_ram_complete_modes,
+  san_ram_complete_total
+)
+```
+
+```{r}
+san_ram_complete_map <- san_ram_complete %>% 
+  pivot_wider(
+    names_from = "mode",
+    values_from = "score"
+  ) %>% 
+  cbind(san_ram_blocks %>% select(GEOID10)) %>% 
+  st_as_sf()
+
+mapview(san_ram_complete_map, zcol = "total")
+```
+
+ANTIOCH
+
+```{r}
+ant_boundary <- places("CA") %>% 
+  filter(NAME == "Antioch")
+
+ant_blocks <- cc_blocks %>% 
+  st_centroid() %>% 
+  .[ant_boundary, ] %>% 
+  st_drop_geometry() %>% 
+  left_join(cc_blocks %>% select(GEOID10)) %>% 
+  st_as_sf()
+
+mapview(ant_blocks)
+```
+
+```{r}
+saveRDS(ant_blocks, "ant_blocks.rds")
+ant_blocks <- readRDS("ant_blocks.rds")
+```
+
+```{r}
+ant_isochrones <- c("walking","driving") %>%
+  map_dfr(function(x){
+
+    mb_isochrone(
+      ant_blocks,
+      profile = x,
+      time = c(5,10,15)
+    ) %>%
+      mutate(mode = x)
+
+  })
+```
+
+```{r}
+saveRDS(ant_isochrones, "ant_isochrones.rds")
+ant_isochrones <- readRDS("ant_isochrones.rds")
+```
+
+```{r}
+sf::sf_use_s2(FALSE)
+
+ant_access_raw <- ant_isochrones %>% 
+  st_make_valid() %>%
+  st_join(pois_filter) %>% 
+  filter(!is.na(osm_id)) %>% 
+  st_drop_geometry()
+```
+
+```{r}
+ant_complete_temp <- ant_access_raw %>% 
+  left_join(
+    amenity_preference,
+    by = "amenity"
+  ) %>% 
+  left_join(
+    mode_preference,
+    by = "mode"
+  ) %>% 
+  group_by(id,mode,amenity) %>% 
+  arrange(time) %>% 
+  mutate(
+    amenity_rank = row_number() - 1
+  ) %>% 
+  ungroup()
+```
+
+```{r}
+ant_complete_modes <- ant_complete_temp %>% 
+  mutate(
+    score = amenity_value * exp(-amenity_rank * amenity_decay) * sigmoid_mode_func(time, mode_reasonable, 0.05)
+  ) %>% 
+  group_by(id, mode) %>% 
+  arrange(desc(score)) %>% 
+  filter(!duplicated(osm_id)) %>%
+  summarize(
+    score = sum(score, na.rm=T)/sum(complete_baseline$score)
+  )
+```
+
+```{r}
+ant_complete_total <- ant_complete_temp %>% 
+  mutate(
+    score = amenity_value * exp(-amenity_rank * amenity_decay) * mode_value * sigmoid_mode_func(time, mode_reasonable, 0.05)
+  ) %>% 
+  group_by(id) %>% 
+  arrange(desc(score)) %>% 
+  filter(!duplicated(osm_id)) %>% 
+  summarize(
+    score = sum(score, na.rm = T)/sum(complete_baseline$score)
+  ) %>% 
+  mutate(mode = "total")
+```
+
+```{r}
+ant_complete <- rbind(
+  ant_complete_modes,
+  ant_complete_total
+)
+```
+
+```{r}
+ant_complete_map <- ant_complete %>% 
+  pivot_wider(
+    names_from = "mode",
+    values_from = "score"
+  ) %>% 
+  cbind(ant_blocks %>% select(GEOID10)) %>% 
+  st_as_sf()
+
+mapview(ant_complete_map, zcol = "total")
+```
+
+```{r}
+dec_vars_2020 <-
+  listCensusMetadata(
+    name = "2020/dec/pl",
+    type = "variables"
+  )
+```
+
+```{r}
+census_race_categories <- 
+  c(
+    "White alone",
+    "Asian alone",
+    "Black or African American alone",
+    "Two or More Races",
+    "American Indian and Alaska Native alone",
+    "Native Hawaiian and Other Pacific Islander alone",
+    "Some Other Race alone"
+  )
+
+cc_pop_race_2020 <-
+  getCensus(
+    name = "dec/pl",
+    vintage = 2020,
+    region = "block:*", 
+    regionin = "state:06+county:013",
+    vars = "group(P2)"
+  ) %>% 
+  mutate(
+    block =
+      paste0(state,county,tract,block)
+  ) %>% 
+  select(!c(GEO_ID,state,county,tract,NAME) & !ends_with(c("NA"))) %>% 
+  pivot_longer(
+    ends_with("N"),
+    names_to = "name",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    dec_vars_2020 %>% 
+      select(name, label)
+  ) %>% 
+  select(-name) %>% 
+  separate(
+    label,
+    into = c(NA,NA,NA,NA,"race"),
+    sep = "!!"
+  ) %>% 
+  filter(
+    !is.na(race)
+  ) %>% 
+  mutate(
+    race = ifelse(
+      race %in% census_race_categories,
+      ifelse(
+        race %in% c("American Indian and Alaska Native alone", "Native Hawaiian and Other Pacific Islander alone"),
+        "Some Other Race alone",
+        race
+      ),
+      "Two or More Races"
+    )
+  )
+```
+
+```{r}
+san_ram_drive_15min <-
+  san_ram_isochrones %>% 
+  filter(
+    time == 15,
+    mode == "driving"
+  ) %>% 
+  select(!c(mode, time))
+
+san_ram_hospital_drive_15min <-
+  san_ram_access_raw %>% 
+  filter(
+    time == 15,
+    mode == "driving",
+    amenity == "hospital"
+  ) %>% 
+  left_join(
+    san_ram_drive_15min,
+    by = "id"
+  ) %>% 
+  st_as_sf()
+```
+
+```{r}
+san_ram_drive_5min <-
+  san_ram_isochrones %>% 
+  filter(
+    time == 5,
+    mode == "driving"
+  ) %>% 
+  select(!c(mode, time))
+
+san_ram_hospital_drive_5min <-
+  san_ram_access_raw %>% 
+  filter(
+    time == 5,
+    mode == "driving",
+    amenity == "hospital"
+  ) %>% 
+  left_join(
+    san_ram_drive_5min,
+    by = "id"
+  ) %>% 
+  st_as_sf()
+```
+
+```{r}
+leaflet() %>% 
+  addMapboxTiles(
+    style_id = "streets-v11",
+    username = "mapbox"
+  ) %>%
+  addPolygons(
+    data = san_ram_hospital_drive_15min,
+    label = ~name
+  )
+```
+
+```{r}
+sf_use_s2(FALSE)
+
+san_ram_blocks_2 <- 
+  san_ram_blocks %>% 
+  st_transform(26910) %>% 
+  mutate(original_area = st_area(.))
+
+san_ram_block_hospital_intersect <-
+  san_ram_blocks_2 %>% 
+  st_intersection(
+    san_ram_hospital_drive_5min %>% 
+      st_union() %>% 
+      st_transform(26910)
+  ) %>% 
+  mutate(
+    leftover_area = st_area(.),
+    perc_area = leftover_area / original_area
+  )
+```
+
+```{r}
+san_ram_race <-
+  cc_pop_race_2020 %>% 
+  filter(
+    block %in% san_ram_blocks$GEOID10
+  ) %>% 
+  mutate(race = factor(race, levels = unique(cc_pop_race_2020$race))) %>% 
+  group_by(race) %>% 
+  summarize(estimate = sum(estimate)) %>% 
+  mutate(
+    perc = estimate/sum(estimate),
+    group = "Full Population"
+  ) %>% 
+  arrange(
+    desc(perc)
+  )
+  
+san_ram_hospital_race <-
+  cc_pop_race_2020 %>% 
+  mutate(race = factor(race, levels = unique(cc_pop_race_2020$race))) %>% 
+  left_join(
+    san_ram_block_hospital_intersect %>% 
+      select(block = GEOID10, perc_area) %>% 
+      st_drop_geometry()
+  ) %>% 
+  filter(!is.na(perc_area)) %>% 
+  mutate(
+    estimate = estimate * perc_area
+  ) %>% 
+  group_by(race) %>% 
+  summarize(estimate = sum(estimate)) %>% 
+  mutate(
+    estimate = drop_units(estimate),
+    perc = estimate/sum(estimate),
+    group = "San Ramon Population within \n5 min. drive of hospitals"
+  ) %>% 
+  arrange(
+    desc(perc)
+  )
+```
+
+```{r}
+rbind(san_ram_race, san_ram_hospital_race) %>% 
+  ggplot(
+    aes(
+      x = "", 
+      y = perc, 
+      fill = reorder(race,desc(race)) %>% factor(levels = rev(census_race_categories))
+    )
+  ) + 
+  geom_bar(
+    stat = "identity", 
+    position = position_fill()
+  ) +
+  geom_text(
+    aes(label = paste0(round(perc*100),"%")),
+    position = position_fill(vjust = 0.5)
+  ) +
+  coord_polar(theta = "y") +
+  facet_wrap(~ group)  +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    legend.position = 'bottom'
+  ) + 
+  guides(
+    fill = guide_legend(nrow=3, byrow=TRUE)
+  ) +
+  labs(
+    fill = "Household\nRace"
+  ) + 
+  scale_fill_manual(values=c("#FC835D", "#FFDC1F", "#B0CD36","#65BAF3", "#865AF6"))
+```
+
+```{r}
+ant_drive_15min <-
+  ant_isochrones %>% 
+  filter(
+    time == 15,
+    mode == "driving"
+  ) %>% 
+  select(!c(mode, time))
+
+ant_hospital_drive_15min <-
+  ant_access_raw %>% 
+  filter(
+    time == 15,
+    mode == "driving",
+    amenity == "hospital"
+  ) %>% 
+  left_join(
+    ant_drive_15min,
+    by = "id"
+  ) %>% 
+  st_as_sf()
+```
+
+```{r}
+ant_drive_5min <-
+  ant_isochrones %>% 
+  filter(
+    time == 5,
+    mode == "driving"
+  ) %>% 
+  select(!c(mode, time))
+
+ant_hospital_drive_5min <-
+  ant_access_raw %>% 
+  filter(
+    time == 5,
+    mode == "driving",
+    amenity == "hospital"
+  ) %>% 
+  left_join(
+    ant_drive_5min,
+    by = "id"
+  ) %>% 
+  st_as_sf()
+
+ant_doctors_drive_5min <-
+  ant_access_raw %>% 
+  filter(
+    time == 5,
+    mode == "driving",
+    amenity == "doctors"
+  ) %>% 
+  left_join(
+    ant_drive_5min,
+    by = "id"
+  ) %>% 
+  st_as_sf()
+```
+
+```{r}
+leaflet() %>% 
+  addMapboxTiles(
+    style_id = "streets-v11",
+    username = "mapbox"
+  ) %>%
+  addPolygons(
+    data = ant_hospital_drive_15min,
+    label = ~name
+  )
+```
+
+```{r}
+sf_use_s2(FALSE)
+
+ant_blocks_2 <- 
+  ant_blocks %>% 
+  st_transform(26910) %>% 
+  mutate(original_area = st_area(.))
+
+ant_block_hospital_intersect <-
+  ant_blocks_2 %>% 
+  st_intersection(
+    ant_hospital_drive_5min %>% 
+      st_union() %>% 
+      st_transform(26910)
+  ) %>% 
+  mutate(
+    leftover_area = st_area(.),
+    perc_area = leftover_area / original_area
+  )
+
+ant_block_doctors_intersect <-
+  ant_blocks_2 %>% 
+  st_intersection(
+    ant_doctors_drive_5min %>% 
+      st_union() %>% 
+      st_transform(26910)
+  ) %>% 
+  mutate(
+    leftover_area = st_area(.),
+    perc_area = leftover_area / original_area
+  )
+```
+```{r}
+ant_race <-
+  cc_pop_race_2020 %>% 
+  filter(
+    block %in% ant_blocks$GEOID10
+  ) %>% 
+  mutate(race = factor(race, levels = unique(cc_pop_race_2020$race))) %>% 
+  group_by(race) %>% 
+  summarize(estimate = sum(estimate)) %>% 
+  mutate(
+    perc = estimate/sum(estimate),
+    group = "Antioch Full Population"
+  ) %>% 
+  arrange(
+    desc(perc)
+  )
+  
+ant_hospital_race <-
+  cc_pop_race_2020 %>% 
+  mutate(race = factor(race, levels = unique(cc_pop_race_2020$race))) %>% 
+  left_join(
+    ant_block_hospital_intersect %>% 
+      select(block = GEOID10, perc_area) %>% 
+      st_drop_geometry()
+  ) %>% 
+  filter(!is.na(perc_area)) %>% 
+  mutate(
+    estimate = estimate * perc_area
+  ) %>% 
+  group_by(race) %>% 
+  summarize(estimate = sum(estimate)) %>% 
+  mutate(
+    estimate = drop_units(estimate),
+    perc = estimate/sum(estimate),
+    group = "Antioch Population within \n5 min. drive of hospitals"
+  ) %>% 
+  arrange(
+    desc(perc)
+  )
+
+ant_doctors_race <-
+  cc_pop_race_2020 %>% 
+  mutate(race = factor(race, levels = unique(cc_pop_race_2020$race))) %>% 
+  left_join(
+    ant_block_hospital_intersect %>% 
+      select(block = GEOID10, perc_area) %>% 
+      st_drop_geometry()
+  ) %>% 
+  filter(!is.na(perc_area)) %>% 
+  mutate(
+    estimate = estimate * perc_area
+  ) %>% 
+  group_by(race) %>% 
+  summarize(estimate = sum(estimate)) %>% 
+  mutate(
+    estimate = drop_units(estimate),
+    perc = estimate/sum(estimate),
+    group = "Antioch Population within \n5 min. drive of doctors"
+  ) %>% 
+  arrange(
+    desc(perc)
+  )
+```
+
+```{r}
+rbind(ant_race, ant_hospital_race) %>% 
+  ggplot(
+    aes(
+      x = "", 
+      y = perc, 
+      fill = reorder(race,desc(race)) %>% factor(levels = rev(census_race_categories))
+    )
+  ) + 
+  geom_bar(
+    stat = "identity", 
+    position = position_fill()
+  ) +
+  geom_text(
+    aes(label = paste0(round(perc*100),"%")),
+    position = position_fill(vjust = 0.5)
+  ) +
+  coord_polar(theta = "y") +
+  facet_wrap(~ group)  +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    legend.position = 'bottom'
+  ) + 
+  guides(
+    fill = guide_legend(nrow=3, byrow=TRUE)
+  ) +
+  labs(
+    fill = "Household\nRace"
+  ) + 
+  scale_fill_manual(values=c("#FC835D", "#FFDC1F", "#B0CD36","#65BAF3", "#865AF6"))
+```
+
+```{r}
+ant_drive_10min <-
+  ant_isochrones %>% 
+  filter(
+    time == 10,
+    mode == "driving"
+  ) %>% 
+  select(!c(mode, time))
+
+ant_pharm_drive_10min <-
+  ant_access_raw %>% 
+  filter(
+    time == 10,
+    mode == "driving",
+    amenity == "pharmacy"
+  ) %>% 
+  inner_join(
+    ant_drive_10min,
+    by = "id"
+  ) %>% 
+  st_as_sf()
+```
+
+```{r}
+leaflet() %>% 
+  addMapboxTiles(
+    style_id = "streets-v11",
+    username = "mapbox"
+  ) %>%
+  addPolygons(
+    data = ant_pharm_drive_10min,
+    label = ~name
+  )
+```
+
+```{r}
+sf_use_s2(FALSE)
+
+san_ram_blocks_2 <- 
+  san_ram_blocks %>% 
+  st_transform(26910) %>% 
+  mutate(original_area = st_area(.))
+
+san_ram_block_hospital_intersect <-
+  san_ram_blocks_2 %>% 
+  st_intersection(
+    san_ram_hospital_drive_5min %>% 
+      st_union() %>% 
+      st_transform(26910)
+  ) %>% 
+  mutate(
+    leftover_area = st_area(.),
+    perc_area = leftover_area / original_area
+  )
+```
+
+```{r}
+san_ram_race <-
+  cc_pop_race_2020 %>% 
+  filter(
+    block %in% san_ram_blocks$GEOID10
+  ) %>% 
+  mutate(race = factor(race, levels = unique(cc_pop_race_2020$race))) %>% 
+  group_by(race) %>% 
+  summarize(estimate = sum(estimate)) %>% 
+  mutate(
+    perc = estimate/sum(estimate),
+    group = "Full Population"
+  ) %>% 
+  arrange(
+    desc(perc)
+  )
+  
+san_ram_hospital_race <-
+  cc_pop_race_2020 %>% 
+  mutate(race = factor(race, levels = unique(cc_pop_race_2020$race))) %>% 
+  left_join(
+    san_ram_block_hospital_intersect %>% 
+      select(block = GEOID10, perc_area) %>% 
+      st_drop_geometry()
+  ) %>% 
+  filter(!is.na(perc_area)) %>% 
+  mutate(
+    estimate = estimate * perc_area
+  ) %>% 
+  group_by(race) %>% 
+  summarize(estimate = sum(estimate)) %>% 
+  mutate(
+    estimate = drop_units(estimate),
+    perc = estimate/sum(estimate),
+    group = "San Ramon Population within \n5 min. drive of hospitals"
+  ) %>% 
+  arrange(
+    desc(perc)
+  )
+```
+

@@ -1,0 +1,518 @@
+---
+title: "218Y Assignment 1"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(esri2sf)
+library(tigris)
+library(sf)
+library(leaflet)
+library(tidycensus)
+library(censusapi)
+library(ggplot2)
+
+census_api_key("67343486046933b2d74f13923ac153228348f817")
+Sys.setenv(CENSUS_KEY="67343486046933b2d74f13923ac153228348f817")
+
+epa_zoning <- esri2sf("https://services8.arcgis.com/0IC8hha3hgQkmGoa/arcgis/rest/services/EastPaloAltoZoning_2021_WFL1/FeatureServer/1")
+
+smc_exemption <- read_csv("https://datahub.smcgov.org/api/views/pmvw-bs84/rows.csv?accessType=DOWNLOAD")
+```
+
+```{r}
+acs_vars_2019_5yr <-
+  listCensusMetadata(
+    name = "2019/acs/acs5",
+    type = "variables"
+  )
+
+epa_income_renter_perc_total <- getCensus(
+    name = "acs/acs5",
+    vintage = 2019, 
+    vars = "group(B25074)", 
+    region = "place:*",
+    regionin = "state:06"
+  ) %>% 
+  filter(
+    place == "20956"
+  ) %>% 
+  select(!c(state, place, NAME, GEO_ID) & !ends_with(c("EA","MA","M"))) %>%
+  pivot_longer(
+    ends_with("E"),
+    names_to = "variable",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    acs_vars_2019_5yr %>% 
+      select(name, label), 
+    by = c("variable" = "name")
+  ) %>% 
+  select(-variable) %>% 
+  separate(
+    label,
+    into = c(NA,NA,"income","housing_perc"),
+    sep = "!!"
+  ) %>% 
+  filter(!is.na(housing_perc)) %>% 
+  mutate(
+    type = "renter"
+  )
+
+epa_income_owner_perc_total <- getCensus(
+    name = "acs/acs5",
+    vintage = 2019, 
+    vars = "group(B25095)", 
+    region = "place:*",
+    regionin = "state:06"
+  ) %>% 
+  filter(
+    place == "20956"
+  ) %>% 
+  select(!c(state, place, NAME, GEO_ID) & !ends_with(c("EA","MA","M"))) %>%
+  pivot_longer(
+    ends_with("E"),
+    names_to = "variable",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    acs_vars_2019_5yr %>% 
+      select(name, label), 
+    by = c("variable" = "name")
+  ) %>% 
+  select(-variable) %>% 
+  separate(
+    label,
+    into = c(NA,NA,"income","housing_perc"),
+    sep = "!!"
+  ) %>% 
+  filter(!is.na(housing_perc)) %>% 
+  mutate(
+    type = "owner"
+  )
+
+burdened_perc <- c("30.0 to 34.9 percent", "35.0 to 39.9 percent", "40.0 to 49.9 percent", "50.0 percent or more")
+
+epa_income_housing_perc_total <- 
+  epa_income_renter_perc_total %>% 
+  rbind(
+    epa_income_owner_perc_total
+  ) %>% 
+  filter(
+    housing_perc != "Not computed"
+  ) %>% 
+  mutate(
+    burden_level = ifelse(
+      housing_perc %in% burdened_perc,
+      ifelse(
+        burdened_perc == "50.0 percent or more",
+        "Severe: Housing costs exceed 50% of income",
+        "Moderate: Housing costs are between 30 and 50% of income"
+      ),
+      "Mild: Housing costs are under 30% of income"
+    )
+  ) %>% 
+  mutate(
+    income = ifelse(
+      income %in% c("$100,000 to $149,999:", "$150,000 or more:"),
+      "$100,000 or more:",
+      income
+    )
+  )
+```
+
+```{r}
+epa_income_housing_summarized <-
+  epa_income_housing_perc_total %>% 
+  select(
+    -type
+  ) %>% 
+  group_by(income, housing_perc, burden_level) %>% 
+  summarize(
+    estimate = sum(estimate, na.rm = T)
+  ) %>% 
+  group_by(income) %>% 
+  mutate(
+    income_lvl_perc = estimate / sum(estimate) * 100
+  ) %>% 
+  group_by(income, burden_level)%>% 
+  summarize(
+    estimate = sum(estimate, na.rm = T),
+    income_lvl_perc = sum(income_lvl_perc, na.rm = T)
+  )
+
+epa_income_housing_chart <-
+  epa_income_housing_summarized %>% 
+  ggplot(
+    aes(fill=burden_level, 
+        y=income_lvl_perc, 
+        x=income %>% factor(levels = (c("Less than $10,000:","$10,000 to $19,999:","$20,000 to $34,999:","$35,000 to $49,999:","$50,000 to $74,999:","$75,000 to $99,999:","$100,000 or more:"))))
+    ) + 
+  geom_bar(position="fill", stat="identity") +
+  labs(
+    x = "Income Level" ,
+    y = "Proportion of Households",
+    title = "Housing Burden at Varying Income Levels in East Palo Alto",
+    fill = "Housing Burden Level"
+  ) +
+  scale_fill_manual(values = rev(c("#9d0208", "#e85d04", "#ffba08"))) +
+  theme(
+    axis.text.x = element_text(
+      angle = 90, 
+      vjust = 0.5,
+      hjust=1
+    )
+  )
+```
+
+```{r}
+epa_income_housing_chart
+```
+
+```{r}
+epa_income_renter_summarized <-
+  epa_income_housing_perc_total %>% 
+  filter(
+    type == "renter"
+  ) %>% 
+  select(
+    -type
+  ) %>% 
+  group_by(income, housing_perc, burden_level) %>% 
+  summarize(
+    estimate = sum(estimate, na.rm = T)
+  ) %>% 
+  group_by(income) %>% 
+  mutate(
+    income_lvl_perc = estimate / sum(estimate) * 100
+  ) %>% 
+  group_by(income, burden_level)%>% 
+  summarize(
+    estimate = sum(estimate, na.rm = T),
+    income_lvl_perc = sum(income_lvl_perc, na.rm = T)
+  )
+
+epa_income_renter_chart <-
+  epa_income_renter_summarized %>% 
+  ggplot(
+    aes(fill=burden_level, 
+        y=income_lvl_perc, 
+        x=income %>% factor(levels = (c("Less than $10,000:","$10,000 to $19,999:","$20,000 to $34,999:","$35,000 to $49,999:","$50,000 to $74,999:","$75,000 to $99,999:","$100,000 or more:"))))
+    ) + 
+  geom_bar(position="fill", stat="identity") +
+  labs(
+    x = "Income Level" ,
+    y = "Proportion of Households",
+    title = "Housing Burden for Renter-occupied Households at Varying Income Levels in East Palo Alto",
+    fill = "Housing Burden Level"
+  ) +
+  scale_fill_manual(values = rev(c("#9d0208", "#e85d04", "#ffba08"))) +
+  theme(
+    axis.text.x = element_text(
+      angle = 90, 
+      vjust = 0.5,
+      hjust=1
+    )
+  )
+```
+
+```{r}
+epa_income_owner_summarized <-
+  epa_income_housing_perc_total %>% 
+  filter(
+    type == "owner"
+  ) %>% 
+  select(
+    -type
+  ) %>% 
+  group_by(income, housing_perc, burden_level) %>% 
+  summarize(
+    estimate = sum(estimate, na.rm = T)
+  ) %>% 
+  group_by(income) %>% 
+  mutate(
+    income_lvl_perc = estimate / sum(estimate) * 100
+  ) %>% 
+  group_by(income, burden_level)%>% 
+  summarize(
+    estimate = sum(estimate, na.rm = T),
+    income_lvl_perc = sum(income_lvl_perc, na.rm = T)
+  )
+
+epa_income_owner_chart <-
+  epa_income_owner_summarized %>% 
+  ggplot(
+    aes(fill=burden_level, 
+        y=income_lvl_perc, 
+        x=income %>% factor(levels = (c("Less than $10,000:","$10,000 to $19,999:","$20,000 to $34,999:","$35,000 to $49,999:","$50,000 to $74,999:","$75,000 to $99,999:","$100,000 or more:"))))
+    ) + 
+  geom_bar(position="fill", stat="identity") +
+  labs(
+    x = "Income Level" ,
+    y = "Proportion of Households",
+    title = "Housing Burden for Owner-occupied Households at Varying Income Levels in East Palo Alto",
+    fill = "Housing Burden Level"
+  ) +
+  scale_fill_manual(values = rev(c("#9d0208", "#e85d04", "#ffba08"))) +
+  theme(
+    axis.text.x = element_text(
+      angle = 90, 
+      vjust = 0.5,
+      hjust=1
+    )
+  )
+```
+
+```{r}
+epa_income_renter_chart
+epa_income_owner_chart
+```
+```{r}
+# overall % of renter-occupied units
+(epa_income_housing_perc_total %>% 
+  filter(type == "renter") %>% 
+  pull(estimate) %>% 
+  sum()) /
+  (epa_income_housing_perc_total %>% 
+  pull(estimate) %>% 
+  sum()) * 100
+```
+```{r}
+# overall % of owner-occupied units
+(epa_income_housing_perc_total %>% 
+  filter(type == "owner") %>% 
+  pull(estimate) %>% 
+  sum()) /
+  (epa_income_housing_perc_total %>% 
+  pull(estimate) %>% 
+  sum()) * 100
+```
+```{r}
+# what % of severely burdened households are renter households?
+(epa_income_housing_perc_total %>% 
+  filter((housing_perc == "50.0 percent or more") & (type == "renter")) %>% 
+  pull(estimate) %>% 
+  sum()) /
+  (epa_income_housing_perc_total %>% 
+   filter(housing_perc == "50.0 percent or more") %>%
+  pull(estimate) %>% 
+  sum()) * 100
+```
+```{r}
+# what % of severely burdened households are owner households?
+(epa_income_housing_perc_total %>% 
+  filter((housing_perc == "50.0 percent or more") & (type == "owner")) %>% 
+  pull(estimate) %>% 
+  sum()) /
+  (epa_income_housing_perc_total %>% 
+   filter(housing_perc == "50.0 percent or more") %>%
+  pull(estimate) %>% 
+  sum()) * 100
+```
+
+```{r}
+# renter percentage for the highest income bracket
+(epa_income_housing_perc_total %>% 
+  filter((income == "$100,000 or more:") & (type == "renter")) %>%
+  pull(estimate) %>% 
+  sum()) /
+  (epa_income_housing_perc_total %>% 
+   filter(income == "$100,000 or more:") %>%
+  pull(estimate) %>% 
+  sum()) * 100
+```
+
+```{r}
+# owner percentage for the highest income bracket
+(epa_income_housing_perc_total %>% 
+  filter((income == "$100,000 or more:") & (type == "owner")) %>%
+  pull(estimate) %>% 
+  sum()) /
+  (epa_income_housing_perc_total %>% 
+   filter(income == "$100,000 or more:") %>%
+  pull(estimate) %>% 
+  sum()) * 100
+```
+
+```{r}
+
+```
+
+
+```{r}
+epa_tracts <- c("611900", "612000", "611800")
+
+epa_income_rent_perc <-
+  getCensus(
+    name = "acs/acs5",
+    vintage = 2019,
+    region = "block group:*", 
+    regionin = "state:06+county:081",
+    vars = "group(B25074)"
+  ) %>%
+  filter(
+    tract %in% epa_tracts
+  ) %>%
+  mutate(
+    `census block group` =
+      paste0(state,county,tract,block_group)
+  ) %>% 
+  select(!c(GEO_ID,state,county,tract,block_group,NAME) & !ends_with(c("EA","MA","M"))) %>%
+  pivot_longer(
+    ends_with("E"),
+    names_to = "variable",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    acs_vars_2019_5yr %>% 
+      select(name, label), 
+    by = c("variable" = "name")
+  ) %>% 
+  select(-variable) %>% 
+  separate(
+    label,
+    into = c(NA,NA,"income","rent_perc"),
+    sep = "!!"
+  ) %>% 
+  filter(!is.na(rent_perc))
+```
+
+```{r}
+burden_threshold <- 0.3
+
+epa_burdened_cbgs <- 
+  epa_income_rent_perc %>% 
+  mutate(
+    burdened = ifelse(
+      rent_perc %in% burdened_perc,
+      estimate,
+      NA
+    ),
+    burden = ifelse(
+      rent_perc %in% burdened_perc,
+      ifelse(
+        burdened_perc == "50.0 percent or more",
+        "severe",
+        "moderate"
+      ),
+      "mild"
+    )
+  ) %>% 
+  group_by(`census block group`) %>% 
+  summarize(
+    burdened = sum(burdened, na.rm = T),
+    total_pop = sum(estimate, na.rm = T)
+  ) %>% 
+  mutate(
+    percent_burdened = burdened/total_pop*100
+  ) %>% 
+  filter(!is.na(percent_burdened))
+
+epa_severely_burdened_cbgs <- 
+  epa_income_rent_perc %>% 
+  mutate(
+    severely_burdened = ifelse(
+      rent_perc == "50.0 percent or more",
+      estimate,
+      NA
+    )
+  ) %>% 
+  group_by(`census block group`) %>% 
+  summarize(
+    severely_burdened = sum(severely_burdened, na.rm = T),
+    total_pop = sum(estimate, na.rm = T)
+  ) %>% 
+  mutate(
+    percent_severely_burdened = severely_burdened/total_pop*100
+  ) %>% 
+  filter(!is.na(percent_severely_burdened))
+```
+
+```{r}
+smc_blockgroups <- block_groups("CA", "San Mateo", cb = T, progress_bar = F)
+
+burdened_pal <- colorNumeric(
+  palette = "Oranges",
+  domain = 
+    epa_burdened_cbgs$percent_burdened
+)
+
+leaflet() %>% 
+  addProviderTiles(provider = providers$CartoDB.Positron) %>% 
+  addPolygons(
+    data = 
+      epa_burdened_cbgs %>% 
+        left_join(
+          smc_blockgroups %>% select(GEOID), 
+          by = c(`census block group` = "GEOID")
+        ) %>% 
+        st_as_sf(),
+    fillColor = ~burdened_pal(percent_burdened),
+    color = "white",
+    opacity = 0.5,
+    fillOpacity = 0.75,
+    weight = 1,
+    label = ~paste0(
+      round(percent_burdened), 
+      "% paying more than 30% of income on rent"
+    ),
+    highlightOptions = highlightOptions(
+      weight = 2,
+      opacity = 1
+    )
+  ) %>% 
+  addLegend(
+    data = epa_burdened_cbgs,
+    pal = burdened_pal,
+    values = ~percent_burdened,
+    title = "% paying more than 30% of income on rent"
+  )
+```
+
+```{r}
+#% of EPA paying over 30% of income on housing
+sum(epa_burdened_cbgs$burdened) / sum(epa_burdened_cbgs$total_pop)
+```
+
+```{r}
+severely_burdened_pal <- colorNumeric(
+  palette = "Reds",
+  domain = 
+    epa_severely_burdened_cbgs$percent_severely_burdened
+)
+
+leaflet() %>% 
+  addProviderTiles(provider = providers$CartoDB.Positron) %>% 
+  addPolygons(
+    data = 
+      epa_severely_burdened_cbgs %>% 
+        left_join(
+          smc_blockgroups %>% select(GEOID), 
+          by = c(`census block group` = "GEOID")
+        ) %>% 
+        st_as_sf(),
+    fillColor = ~severely_burdened_pal(percent_severely_burdened),
+    color = "white",
+    opacity = 0.5,
+    fillOpacity = 0.75,
+    weight = 1,
+    label = ~paste0(
+      round(percent_severely_burdened), 
+      "% paying more than 50% of income on rent"
+    ),
+    highlightOptions = highlightOptions(
+      weight = 2,
+      opacity = 1
+    )
+  ) %>% 
+  addLegend(
+    data = epa_severely_burdened_cbgs,
+    pal = severely_burdened_pal,
+    values = ~percent_severely_burdened,
+    title = "Severely Burdened Renter Households in East Palo Alto"
+  )
+```
+

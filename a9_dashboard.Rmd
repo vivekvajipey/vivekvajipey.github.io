@@ -1,0 +1,235 @@
+---
+title: "A9 Dashboard"
+runtime: shiny
+output: 
+  flexdashboard::flex_dashboard:
+    vertical_layout: fill
+---
+
+```{r global, include=FALSE}
+library(flexdashboard)
+library(tidyverse)
+library(leaflet)
+library(sf)
+library(plotly)
+
+pge_data_raw <- readRDS("pge_data_raw.rds")
+
+bay_zips <- readRDS("bay_zips.rds")
+
+pge_data <-
+  pge_data_raw %>% 
+  filter(
+    CUSTOMERCLASS %in% c(
+      "Elec- Commercial",
+      "Elec- Residential",
+      "Gas- Commercial",
+      "Gas- Residential"
+    )
+  ) %>% 
+  group_by(
+    MONTH, 
+    YEAR, 
+    CUSTOMERCLASS
+  ) %>% 
+  summarize(
+    TOTALKBTU = sum(TOTALKBTU, na.rm = T)
+  ) %>% 
+  mutate(
+    DATE = 
+      paste(
+        YEAR,
+        MONTH, 
+        "01",
+        sep="-"
+      ) %>% as.Date()
+  )
+```
+
+Inputs {.sidebar}
+-------------------------------------
+
+```{r}
+checkboxGroupInput(
+  inputId = "year", 
+  label = "Year:",
+  choices = c(2017,2018,2019,2020), 
+  selected = 2020
+)
+```
+
+```{r}
+selectInput(
+  inputId = "class", 
+  label = "Customer Class:",
+  choices = c("Elec- Commercial", "Elec- Residential", "Gas- Commercial", "Gas- Residential"), 
+  selected = "Elec- Commercial"
+)
+```
+
+
+Column
+-------------------------------------
+
+### Monthly consumption
+
+```{r}
+plotlyOutput("plot")
+```
+
+```{r, context = "server"}
+observeEvent({
+  input$year 
+  input$class
+  }, {
+  
+  title_years <- ""
+  for (year in input$year) {
+    title_years <- paste0(title_years, year, ", ")
+  }
+  title_years <- substr(title_years, 1, nchar(title_years) - 2)
+  
+  for (i in seq(1, length(input$year))) {
+    title_years <- paste0(title_years, year, ", ")
+    if (i == 2 & length(input$year) > 2) {
+      title_years <- paste0(title_years, "<br>")
+    }
+  }
+  
+  title_class <- switch(
+    input$class,
+    "Elec- Commercial" = "Commercial Electricity",
+    "Elec- Residential" = "Residential Electricity",
+    "Gas- Commercial" = "Commercial Gas",
+    "Gas- Residential" = "Residential Gas"
+  )
+  
+  chart <- pge_data %>% 
+    filter(
+      CUSTOMERCLASS %in% c(
+        input$class
+      ),
+      YEAR %in% input$year
+    ) %>% 
+    ggplot(
+      aes(
+        x = MONTH,
+        y = TOTALKBTU/1e9
+      )
+    ) +
+    geom_line(
+      aes(
+        color = YEAR %>% factor()
+      )
+    ) +
+    scale_x_discrete(
+      limits = c(
+        "Jan",
+        "Feb",
+        "Mar",
+        "Apr",
+        "May",
+        "Jun",
+        "Jul",
+        "Aug",
+        "Sep",
+        "Oct",
+        "Nov",
+        "Dec"
+      )
+    ) +
+    labs(
+      x = "",
+      y = "Total kBTUs (billions)",
+      title = paste0(title_class, " Consumption in the Bay Area for ", title_years),
+      color = "Year"
+    ) + 
+    theme(legend.position = "none")
+  
+  output$plot <- renderPlotly({
+    chart %>% 
+      ggplotly() %>% 
+      config(displayModeBar = F)
+  }) 
+})
+```
+
+Column
+-------------------------------------
+
+### ZCTA consumption
+
+```{r}
+leafletOutput("map")
+```
+
+```{r, context = "server"}
+observeEvent({
+  input$year
+  input$class
+  }, {
+  
+  title_class <- switch(
+    input$class,
+    "Elec- Commercial" = "Commercial<br>Electricity",
+    "Elec- Residential" = "Residential<br>Electricity",
+    "Gas- Commercial" = "Commercial<br>Gas",
+    "Gas- Residential" = "Residential<br>Gas"
+  )  
+    
+  pge_res_elec <-
+    pge_data_raw %>% 
+    filter(
+      CUSTOMERCLASS == input$class,
+      YEAR == max(input$year)
+    ) %>% 
+    mutate(
+      ZIPCODE = ZIPCODE %>% as.character()
+    ) %>% 
+    group_by(ZIPCODE) %>% 
+    summarize(
+      TOTALKBTU = sum(TOTALKBTU, na.rm = T)
+    ) %>% 
+    right_join(
+      bay_zips %>% select(GEOID10),
+      by = c("ZIPCODE" = "GEOID10")
+    ) %>% 
+    st_as_sf() %>% 
+    st_transform(4326)
+  
+  res_pal <- colorNumeric(
+    palette = "Reds",
+    domain = 
+      pge_res_elec$TOTALKBTU
+  )
+  
+  output$map <- renderLeaflet({
+    leaflet() %>% 
+      addProviderTiles(provider = providers$CartoDB.Positron) %>% 
+      addPolygons(
+        data = pge_res_elec,
+        fillColor = ~res_pal(TOTALKBTU),
+        color = "white",
+        opacity = 0.5,
+        fillOpacity = 0.5,
+        weight = 1,
+        label = ~paste0(
+          round(TOTALKBTU), 
+          " kBTU total in ",
+          ZIPCODE
+        ),
+        highlightOptions = highlightOptions(
+          weight = 2,
+          opacity = 1
+        )
+      ) %>% 
+      addLegend(
+        data = pge_res_elec,
+        pal = res_pal,
+        values = ~TOTALKBTU,
+        title = paste0("Total ", title_class, " (kBTU), ", max(input$year))
+      )
+  })
+  
+})
+```

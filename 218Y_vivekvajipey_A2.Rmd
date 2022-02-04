@@ -1,0 +1,983 @@
+---
+title: "218Y_vivekvajipey_A2"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, eval = F)
+
+library(tidyverse)
+library(sf)
+library(tigris)
+library(censusapi)
+library(mapview)
+library(leaflet)
+library(mapboxapi)
+library(viridis)
+
+Sys.setenv(CENSUS_KEY="67343486046933b2d74f13923ac153228348f817")
+mb_access_token("pk.eyJ1IjoidnZhamlwZXkiLCJhIjoiY2t5dWxpN2xuMW9yYjJubnVrY2trdGF4ZCJ9.v4iJv_62J6JLt2rHxP-QTQ", install = T, overwrite = TRUE)
+```
+
+The ideal "complete community" is one in which everyone has access to all of their desired amenities within a reasonable amount of time while using their preferred mode of travel. In this report, we have implemented a methodology to determine and analyze the extent of completeness of two Bay Area cities: Antioch and San Ramon (the reasons for this selection will be elaborated upon later). Travel feasibility was primarily tracked using isochrones generated using the Mapbox API and the amenities were tracked using OpenStreetMap's places of interest data set.
+
+```{r}
+path <- "G:/Shared drives/SFBI/Data Library/NHTS/nhts17-caltrans-tsdc-download/"
+pois <- st_read("G:/Shared drives/SFBI/Data Library/OSM/gis_osm_pois_a_free_1.shp")
+```
+
+```{r}
+pois_summary <- pois %>% 
+  st_drop_geometry() %>% 
+  group_by(fclass) %>% 
+  count() %>% 
+  arrange(desc(n))
+
+pois_summary
+```
+
+```{r}
+cc_boundary <- counties("CA") %>% 
+  filter(NAME == "Contra Costa") %>% 
+  st_transform(st_crs(pois))
+
+# will take longer but handles larger POIs better
+cc_pois <- pois %>% 
+  .[cc_boundary,] %>% 
+  rename(amenity = fclass)
+```
+
+```{r}
+mapview(cc_pois, zcol = "amenity")
+```
+
+```{r}
+pois_filter <- pois %>% 
+  rename(amenity = fclass) %>% 
+  filter(amenity %in% c(
+    "supermarket",
+    "convenience",
+    "restaurant",
+    "school",
+    "park",
+    "hospital",
+    "doctors",
+    "dentist",
+    "library",
+    "sports_centre",
+    "swimming_pool",
+    "pharmacy"
+  ))
+```
+
+```{r}
+saveRDS(pois_filter, "pois_filter.rds")
+pois_filter <- readRDS("pois_filter.rds")
+```
+
+```{r}
+cc_blocks <- blocks("CA","Contra Costa")
+```
+
+```{r}
+san_ram_boundary <- places("CA") %>% 
+  filter(NAME == "San Ramon")
+
+san_ram_blocks <- cc_blocks %>% 
+  st_centroid() %>% 
+  .[san_ram_boundary, ] %>% 
+  st_drop_geometry() %>% 
+  left_join(cc_blocks %>% select(GEOID10)) %>% 
+  st_as_sf()
+```
+
+```{r}
+saveRDS(san_ram_blocks, "san_ram_blocks.rds")
+```
+
+```{r}
+ant_boundary <- places("CA") %>% 
+  filter(NAME == "Antioch")
+
+ant_blocks <- cc_blocks %>% 
+  st_centroid() %>% 
+  .[ant_boundary, ] %>% 
+  st_drop_geometry() %>% 
+  left_join(cc_blocks %>% select(GEOID10)) %>% 
+  st_as_sf()
+```
+
+```{r}
+ant_blocks$id<- 1:nrow(ant_blocks)
+saveRDS(ant_blocks, "ant_blocks.rds")
+```
+
+### Methodology
+When conducting the analysis, we chose to calculate scores for each census block each city which allowed for increased granularity when assessing the proximity of various regions to the amenities. Using blocks rather than block groups also results in more accurate results because the methodology calculates distances from the census geometry's centroid, so the smaller the geometry, the lesser the inaccuracy of the centroid approximation. Additionally, when conducting an equity analysis of the completeness in each city, the selection to use blocks makes it necessary to use the decennial census data from 2020 to provide insights about the racial demographics in each block. The maps below visualize the blocks in San Ramon and Antioch.
+
+```{r, eval=T}
+san_ram_blocks <- readRDS("san_ram_blocks.rds")
+mapview(san_ram_blocks)
+```
+
+```{r, eval = T}
+ant_blocks <- readRDS("ant_blocks.rds")
+mapview(ant_blocks)
+```
+
+The completeness analysis involved tracking 12 different amenities: supermarkets, convenience stores, restaurants, schools, parks, hospitals, doctor's offices, dental clinics, libraries, sports centers, swimming pools, and pharmacies. The range of amenities was designed to incorporate the varied necessities of the residents. For instance, the necessity for groceries, food, and related goods is represented by supermarkets, convenience stores, and restaurants while health-related needs are represented by doctor's offices, dental clinics, sports centers, and pharmacies. One key aspect of life missing from the completeness score determination is the proximity of the workplace, which cannot be feasibly determined and applied to all residents (except for children attending schools). In order to determine the extent of travel for 5, 10 and 15 minute periods, isochrones were generated for each block in the city. 
+
+```{r}
+san_ram_isochrones <- c("walking","driving") %>%
+  map_dfr(function(x){
+
+    mb_isochrone(
+      san_ram_blocks,
+      profile = x,
+      time = c(5,10,15)
+    ) %>%
+      mutate(mode = x)
+
+  })
+```
+
+```{r}
+saveRDS(san_ram_isochrones, "san_ram_isochrones.rds")
+```
+
+```{r, eval = T}
+sam_ram_isochrones <- readRDS("san_ram_isochrones.rds")
+```
+
+```{r}
+san_ram_access_raw <- san_ram_isochrones %>% 
+  st_make_valid() %>%
+  st_join(pois_filter) %>% 
+  filter(!is.na(osm_id)) %>% 
+  st_drop_geometry()
+```
+
+The calculation of completeness scores for the cities requires several choices to be made regarding the weightage and decay rates of amenities. Below is the graph of the decay function we have designed to best reflect the trends of an amenity's value compared to the time required to reach it. The decay is modeled after a reverse sigmoid function in which the steepest decline in value would occur at the "reasonable time" (which in the graph is 20 minutes). As compared to a simpler exponential decay function, the times preceding the reasonable time have higher values, which we believed better reflects the utility of these closer amenities.
+
+```{r, eval = T}
+times = seq(0,60,by = 0.1)
+sigmoid_mode_func <- function(x, reasonableTime, b) {
+  a = log((1/(1-b))-1)
+  decay = (log((1/(0.5-b))-1)-a)/reasonableTime
+  return(1/(1+exp(x*decay+a)) + b)
+}
+```
+
+```{r, eval = T}
+timeData = data.frame(Time = times, Value = sigmoid_mode_func(times, 20, 0.05))
+
+timeData %>% 
+ggplot(aes(x = Time, y = Value)) +
+  geom_line(col = "darkblue") + 
+  labs(title = "Value vs Time with a Reasonable Time of 20 Minutes", x = "Time (Minutes)") +
+  theme_minimal()
+```
+
+The completeness score also involves values to be selected for the relative subjective weighting for the amenities and the modes of travel. The amenity values were selected to reflect which amenities were most essential for life in an ideal community. Using this selection criteria, supermarkets, convenience stores, schools and hospitals were ranked highest. For the amenitiy quantity, it was reasonable to assume that only one to three of each amenity would have value, except for restaurants, for which variation in cuisine and style is quite important.
+
+```{r}
+amenity_preference <- data.frame(
+  amenity = c(
+    "supermarket",
+    "convenience",
+    "restaurant",
+    "school",
+    "park",
+    "hospital",
+    "doctors",
+    "dentist",
+    "library",
+    "sports_centre",
+    "swimming_pool",
+    "pharmacy"
+  ),
+  amenity_value = c(
+    1,
+    0.8,
+    0.3,
+    0.7,
+    0.5,
+    0.7,
+    0.5,
+    0.5,
+    0.2,
+    0.5,
+    0.1,
+    0.6
+  ),
+  amenity_quantity = c(
+    2,
+    5,
+    20,
+    3,
+    2,
+    1,
+    1,
+    1,
+    1,
+    2,
+    2,
+    3
+  )
+) %>% 
+  mutate(
+    amenity_decay = -log(0.5)/(amenity_quantity)
+  )
+
+mode_preference <- data.frame(
+  mode = c(
+    "walking",
+    "biking",
+    "driving"
+  ),
+  mode_value = c(
+    1,
+    0.85,
+    0.5
+  ),
+  mode_reasonable = c(
+    12,
+    20,
+    30
+  )
+)
+```
+
+```{r}
+san_ram_complete_temp <- san_ram_access_raw %>% 
+  left_join(
+    amenity_preference,
+    by = "amenity"
+  ) %>% 
+  left_join(
+    mode_preference,
+    by = "mode"
+  ) %>% 
+  group_by(id,mode,amenity) %>% 
+  arrange(time) %>% 
+  mutate(
+    amenity_rank = row_number() - 1
+  ) %>% 
+  ungroup()
+```
+
+```{r}
+complete_baseline <- data.frame(
+  amenity = amenity_preference$amenity %>% 
+    rep(amenity_preference$amenity_quantity)
+  ) %>% 
+  left_join(
+    amenity_preference,
+    by = "amenity"
+  ) %>% 
+  group_by(amenity) %>% 
+  mutate(
+    amenity_rank = row_number() - 1
+  ) %>% 
+  ungroup() %>% 
+  mutate(
+    score = amenity_value * exp(-amenity_rank * amenity_decay) * 0.5
+  )
+```
+
+```{r}
+san_ram_complete_modes <- san_ram_complete_temp %>% 
+  mutate(
+    score = amenity_value * exp(-amenity_rank * amenity_decay) * sigmoid_mode_func(time, mode_reasonable, 0.05)
+  ) %>% 
+  group_by(id, mode) %>% 
+  arrange(desc(score)) %>% 
+  filter(!duplicated(osm_id)) %>%
+  summarize(
+    score = sum(score, na.rm=T)/sum(complete_baseline$score)
+  )
+```
+
+```{r}
+san_ram_complete_total <- san_ram_complete_temp %>% 
+  mutate(
+    score = amenity_value * exp(-amenity_rank * amenity_decay) * mode_value * sigmoid_mode_func(time, mode_reasonable, 0.05)
+  ) %>% 
+  group_by(id) %>% 
+  arrange(desc(score)) %>% 
+  filter(!duplicated(osm_id)) %>% 
+  summarize(
+    score = sum(score, na.rm = T)/sum(complete_baseline$score)
+  ) %>% 
+  mutate(mode = "total")
+```
+
+```{r}
+san_ram_complete <- rbind(
+  san_ram_complete_modes,
+  san_ram_complete_total
+)
+
+saveRDS(san_ram_complete, "san_ram_complete.rds")
+```
+
+```{r, eval = T}
+san_ram_complete <- readRDS("san_ram_complete.rds")
+```
+
+```{r}
+ant_isochrones <- c("walking","driving") %>%
+  map_dfr(function(x){
+
+    mb_isochrone(
+      ant_blocks,
+      profile = x,
+      time = c(5,10,15)
+    ) %>%
+      mutate(mode = x)
+
+  })
+```
+
+```{r}
+saveRDS(ant_isochrones, "ant_isochrones.rds")
+```
+
+```{r. eval = T}
+ant_isochrones <- readRDS("ant_isochrones.rds")
+```
+
+
+```{r}
+#To fix spherical geometry issues
+sf::sf_use_s2(FALSE)
+
+ant_access_raw <- ant_isochrones %>% 
+  st_make_valid() %>%
+  st_join(pois_filter) %>% 
+  filter(!is.na(osm_id)) %>% 
+  st_drop_geometry()
+```
+
+```{r}
+ant_complete_temp <- ant_access_raw %>% 
+  left_join(
+    amenity_preference,
+    by = "amenity"
+  ) %>% 
+  left_join(
+    mode_preference,
+    by = "mode"
+  ) %>% 
+  group_by(id,mode,amenity) %>% 
+  arrange(time) %>% 
+  mutate(
+    amenity_rank = row_number() - 1
+  ) %>% 
+  ungroup()
+```
+
+```{r}
+ant_complete_modes <- ant_complete_temp %>% 
+  mutate(
+    score = amenity_value * exp(-amenity_rank * amenity_decay) * sigmoid_mode_func(time, mode_reasonable, 0.05)
+  ) %>% 
+  group_by(id, mode) %>% 
+  arrange(desc(score)) %>% 
+  filter(!duplicated(osm_id)) %>%
+  summarize(
+    score = sum(score, na.rm=T)/sum(complete_baseline$score)
+  )
+```
+
+```{r}
+ant_complete_total <- ant_complete_temp %>% 
+  mutate(
+    score = amenity_value * exp(-amenity_rank * amenity_decay) * mode_value * sigmoid_mode_func(time, mode_reasonable, 0.05)
+  ) %>% 
+  group_by(id) %>% 
+  arrange(desc(score)) %>% 
+  filter(!duplicated(osm_id)) %>% 
+  summarize(
+    score = sum(score, na.rm = T)/sum(complete_baseline$score)
+  ) %>% 
+  mutate(mode = "total")
+```
+
+```{r}
+ant_complete <- rbind(
+  ant_complete_modes,
+  ant_complete_total
+)
+
+
+saveRDS(ant_complete, "ant_complete.rds")
+```
+
+```{r, eval = T}
+ant_complete <- readRDS("ant_complete.rds")
+```
+
+### Geographic Comparison
+The complete community score described above will now be applied to two major cities in the Bay Area's Contra Costa county: Antioch and San Ramon. While both being in a similar geographic region, the five year Census data reveal that San Ramon's median income is $161,000 while Antioch's is $77,000. In the map below, the completeness of each city's blocks is shown.
+
+```{r, eval = T}
+san_ram_complete_map <- san_ram_complete %>% 
+  pivot_wider(
+    names_from = "mode",
+    values_from = "score"
+  ) %>% 
+  cbind(san_ram_blocks %>% select(GEOID10)) %>% 
+  st_as_sf()
+
+mapview(san_ram_complete_map, zcol = "total")
+```
+
+In San Ramon, it appears that the highest scoring blocks are concentrated near the southern portion of the city, near Dublin. Lower scoring blocks are located in the northeast and central portions of the city. The completeness scores for the blocks in Dougherty Valley are quite moderate overall.
+
+```{r, eval = T}
+ant_complete_map <- ant_complete %>% 
+  pivot_wider(
+    names_from = "mode",
+    values_from = "score"
+  ) %>% 
+  inner_join(ant_blocks %>% select(GEOID10, id)) %>% 
+  st_as_sf()
+
+mapview(ant_complete_map, zcol = "total")
+```
+
+The highest scoring blocks in Antioch are mainly concentrated in the northern half of the city, closer to the San Joaquin River. This is not too surprising, as the households and amenities of the city are all concentrated in this northern portion.
+
+```{r}
+ant_complete %>% 
+  group_by(mode) %>% 
+  summarize(average_score = mean(score))
+
+ant_complete_scores_total <- sort(ant_complete$score[which(ant_complete$mode == "total")])
+
+#Difference
+max(ant_complete_scores_total)- min(ant_complete_scores_total)
+```
+
+```{r}
+san_ram_complete %>% 
+  group_by(mode) %>% 
+  summarize(average_score = mean(score))
+
+san_ram_complete_scores_total <- sort(san_ram_complete$score[which(san_ram_complete$mode == "total")])
+
+#Difference
+max(san_ram_complete_scores_total)- min(san_ram_complete_scores_total)
+
+```
+
+```{r, eval = T}
+ant_complete_total_scores <- ant_complete %>% 
+  filter(mode == "total") %>% 
+  arrange(score) %>% 
+  mutate(City = "Antioch")
+
+ant_complete_total_scores$index <- 1:nrow(ant_complete_total_scores) 
+
+san_ram_complete_total_scores <- san_ram_complete %>% 
+  filter(mode == "total") %>% 
+  arrange(score) %>% 
+  mutate(City = "San Ramon")
+
+san_ram_complete_total_scores$index <- 1:nrow(san_ram_complete_total_scores) 
+
+complete_total_scores <- rbind(ant_complete_total_scores, san_ram_complete_total_scores)
+
+ggplot(data = complete_total_scores, aes(x=index, y = score)) +
+  geom_point(aes(color = score)) + 
+  facet_wrap(vars(City)) + 
+  labs(title = "Completeness Score Per Block", y = "Completeness Score") + 
+  theme_bw() + 
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  scale_color_viridis(name = "Score")
+```
+
+These charts show the distribution of completeness scores in the blocks of Antioch and San Ramon. San Ramon does have more blocks in the high completeness score range from 1.25 to 1.5, while Antioch does have the blocks in the southern region of the city with low scores from 0 to 0.5. However, the total completeness score for San Ramon is 1.10, which is only marginally greater than Antioch's total score of 1.03. When the walking completeness scores are compared, Antioch and San Ramon are quite similar, with score of 0.16 and 0.15 respectively. However, San Ramon's driving score of 2.04 is greater than Antioch's driving score of 1.94 which indicates that the superior driving access to amenities in San Ramon contributes to the community's greater overall completeness.
+
+### Equity Analysis
+
+```{r}
+cc_hospitals <-
+  cc_pois %>% 
+  filter(
+    amenity == "hospital"
+  )
+
+cc_hospital_drive_15min_isochrones <- mb_isochrone(
+  cc_hospitals,
+  profile = "driving",
+  time = 15
+)
+
+cc_hospital_drive_15min <-
+  cc_hospitals %>% 
+  st_drop_geometry() %>% 
+  cbind(cc_hospital_drive_15min_isochrones$geometry) %>% 
+  st_as_sf()
+
+cc_hospital_drive_5min_isochrones <- mb_isochrone(
+  cc_hospitals,
+  profile = "driving",
+  time = 5
+)
+
+cc_hospital_drive_5min <-
+  cc_hospitals %>% 
+  st_drop_geometry() %>% 
+  cbind(cc_hospital_drive_5min_isochrones$geometry) %>% 
+  st_as_sf()
+```
+
+```{r}
+leaflet() %>% 
+  addMapboxTiles(
+    style_id = "streets-v11",
+    username = "mapbox"
+  ) %>%
+  addPolygons(
+    data = cc_hospital_drive_15min,
+    label = ~name
+  )
+
+leaflet() %>% 
+  addMapboxTiles(
+    style_id = "streets-v11",
+    username = "mapbox"
+  ) %>%
+  addPolygons(
+    data = cc_hospital_drive_5min,
+    label = ~name
+  )
+```
+
+```{r}
+san_ram_blocks_2 <- 
+  san_ram_blocks %>% 
+  st_transform(26910) %>% 
+  mutate(original_area = st_area(.))
+
+san_ram_block_hospital_isochrone_intersect_15min <-
+  san_ram_blocks_2 %>% 
+  st_intersection(
+    cc_hospital_drive_15min %>% 
+      st_union() %>% 
+      st_transform(26910)
+  ) %>% 
+  mutate(
+    leftover_area = st_area(.),
+    perc_area = leftover_area / original_area
+  )
+
+san_ram_block_hospital_isochrone_intersect_5min <-
+  san_ram_blocks_2 %>% 
+  st_intersection(
+    cc_hospital_drive_5min %>% 
+      st_union() %>% 
+      st_transform(26910)
+  ) %>% 
+  mutate(
+    leftover_area = st_area(.),
+    perc_area = leftover_area / original_area
+  )
+```
+
+```{r, eval=T}
+census_race_categories <- 
+  c(
+    "White alone",
+    "Asian alone",
+    "Black or African American alone",
+    "Two or More Races",
+    "American Indian and Alaska Native alone",
+    "Native Hawaiian and Other Pacific Islander alone",
+    "Some Other Race alone"
+  )
+```
+
+```{r}
+cc_pop_race_2020 <-
+  getCensus(
+    name = "dec/pl",
+    vintage = 2020,
+    region = "block:*", 
+    regionin = "state:06+county:013",
+    vars = "group(P2)"
+  ) %>% 
+  mutate(
+    block =
+      paste0(state,county,tract,block)
+  ) %>% 
+  select(!c(GEO_ID,state,county,tract,NAME) & !ends_with(c("NA"))) %>% 
+  pivot_longer(
+    ends_with("N"),
+    names_to = "name",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    dec_vars_2020 %>% 
+      select(name, label)
+  ) %>% 
+  select(-name) %>% 
+  separate(
+    label,
+    into = c(NA,NA,NA,NA,"race"),
+    sep = "!!"
+  ) %>% 
+  filter(
+    !is.na(race)
+  ) %>% 
+  mutate(
+    race = ifelse(
+      race %in% census_race_categories,
+      ifelse(
+        race %in% c("American Indian and Alaska Native alone", "Native Hawaiian and Other Pacific Islander alone"),
+        "Some Other Race alone",
+        race
+      ),
+      "Two or More Races"
+    )
+  )
+```
+
+```{r}
+san_ram_race <-
+  cc_pop_race_2020 %>% 
+  filter(
+    block %in% san_ram_blocks$GEOID10
+  ) %>% 
+  mutate(race = factor(race, levels = unique(cc_pop_race_2020$race))) %>% 
+  group_by(race) %>% 
+  summarize(estimate = sum(estimate)) %>% 
+  mutate(
+    perc = estimate/sum(estimate),
+    group = "San Ramon Full Population"
+  ) %>% 
+  arrange(
+    desc(perc)
+  )
+  
+san_ram_hospital_race_15min <-
+  cc_pop_race_2020 %>% 
+  mutate(race = factor(race, levels = unique(cc_pop_race_2020$race))) %>% 
+  left_join(
+    san_ram_block_hospital_isochrone_intersect_15min %>% 
+      select(block = GEOID10, perc_area) %>% 
+      st_drop_geometry()
+  ) %>% 
+  filter(!is.na(perc_area)) %>% 
+  mutate(
+    estimate = estimate * perc_area
+  ) %>% 
+  group_by(race) %>% 
+  summarize(estimate = sum(estimate)) %>% 
+  mutate(
+    estimate = drop_units(estimate),
+    perc = estimate/sum(estimate),
+    group = "San Ramon Population within \n15 min. drive of hospitals"
+  ) %>% 
+  arrange(
+    desc(perc)
+  )
+
+san_ram_hospital_race_5min <-
+  cc_pop_race_2020 %>% 
+  mutate(race = factor(race, levels = unique(cc_pop_race_2020$race))) %>% 
+  left_join(
+    san_ram_block_hospital_isochrone_intersect_5min %>% 
+      select(block = GEOID10, perc_area) %>% 
+      st_drop_geometry()
+  ) %>% 
+  filter(!is.na(perc_area)) %>% 
+  mutate(
+    estimate = estimate * perc_area
+  ) %>% 
+  group_by(race) %>% 
+  summarize(estimate = sum(estimate)) %>% 
+  mutate(
+    estimate = drop_units(estimate),
+    perc = estimate/sum(estimate),
+    group = "San Ramon Population within \n5 min. drive of hospitals"
+  ) %>% 
+  arrange(
+    desc(perc)
+  )
+```
+
+```{r}
+saveRDS(san_ram_race, "san_ram_race.rds")
+
+saveRDS(san_ram_hospital_race_5min, "san_ram_hospital_race_5min.rds")
+
+saveRDS(san_ram_hospital_race_15min, "san_ram_hospital_race_15min.rds")
+```
+
+```{r, eval = T}
+san_ram_race <- readRDS("san_ram_race.rds")
+
+# san_ram_hospital_race_5min <- readRDS("san_ram_hospital_race_5min.rds")
+
+san_ram_hospital_race_15min <- readRDS("san_ram_hospital_race_15min.rds")
+```
+
+```{r}
+rbind(san_ram_race,san_ram_hospital_race_5min) %>% 
+  ggplot(
+    aes(
+      x = "", 
+      y = perc, 
+      fill = reorder(race,desc(race)) %>% factor(levels = rev(census_race_categories))
+    )
+  ) + 
+  geom_bar(
+    stat = "identity", 
+    position = position_fill()
+  ) +
+  geom_text(
+    aes(label = paste0(round(perc*100),"%")),
+    position = position_fill(vjust = 0.5)
+  ) +
+  coord_polar(theta = "y") +
+  facet_wrap(~ group)  +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    legend.position = 'bottom'
+  ) + 
+  guides(
+    fill = guide_legend(nrow=3, byrow=TRUE)
+  ) +
+  labs(
+    fill = "Household\nRace"
+  ) + 
+  scale_fill_manual(values=c("#FC835D", "#FFDC1F", "#B0CD36","#65BAF3", "#865AF6"))
+```
+
+```{r, eval = T}
+rbind(san_ram_race,san_ram_hospital_race_15min) %>% 
+  ggplot(
+    aes(
+      x = "", 
+      y = perc, 
+      fill = reorder(race,desc(race)) %>% factor(levels = rev(census_race_categories))
+    )
+  ) + 
+  geom_bar(
+    stat = "identity", 
+    position = position_fill()
+  ) +
+  geom_text(
+    aes(label = paste0(round(perc*100),"%")),
+    position = position_fill(vjust = 0.5)
+  ) +
+  coord_polar(theta = "y") +
+  facet_wrap(~ group)  +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    legend.position = 'bottom'
+  ) + 
+  guides(
+    fill = guide_legend(nrow=3, byrow=TRUE)
+  ) +
+  labs(
+    fill = "Household\nRace"
+  ) + 
+  scale_fill_manual(values=c("#FC835D", "#FFDC1F", "#B0CD36","#65BAF3", "#865AF6"))
+```
+
+```{r}
+ant_blocks_2 <- 
+  ant_blocks %>% 
+  st_transform(26910) %>% 
+  mutate(original_area = st_area(.))
+
+ant_block_hospital_isochrone_intersect_15min <-
+  ant_blocks_2 %>% 
+  st_intersection(
+    cc_hospital_drive_15min %>% 
+      st_union() %>% 
+      st_transform(26910)
+  ) %>% 
+  mutate(
+    leftover_area = st_area(.),
+    perc_area = leftover_area / original_area
+  )
+
+ant_block_hospital_isochrone_intersect_5min <-
+  ant_blocks_2 %>% 
+  st_intersection(
+    cc_hospital_drive_5min %>% 
+      st_union() %>% 
+      st_transform(26910)
+  ) %>% 
+  mutate(
+    leftover_area = st_area(.),
+    perc_area = leftover_area / original_area
+  )
+```
+
+
+```{r}
+ant_race <-
+  cc_pop_race_2020 %>% 
+  filter(
+    block %in% ant_blocks$GEOID10
+  ) %>% 
+  mutate(race = factor(race, levels = unique(cc_pop_race_2020$race))) %>% 
+  group_by(race) %>% 
+  summarize(estimate = sum(estimate)) %>% 
+  mutate(
+    perc = estimate/sum(estimate),
+    group = "Antioch Full Population"
+  ) %>% 
+  arrange(
+    desc(perc)
+  )
+  
+ant_hospital_race_15min <-
+  cc_pop_race_2020 %>% 
+  mutate(race = factor(race, levels = unique(cc_pop_race_2020$race))) %>% 
+  left_join(
+    ant_block_hospital_isochrone_intersect_15min %>% 
+      select(block = GEOID10, perc_area) %>% 
+      st_drop_geometry()
+  ) %>% 
+  filter(!is.na(perc_area)) %>% 
+  mutate(
+    estimate = estimate * perc_area
+  ) %>% 
+  group_by(race) %>% 
+  summarize(estimate = sum(estimate)) %>% 
+  mutate(
+    estimate = drop_units(estimate),
+    perc = estimate/sum(estimate),
+    group = "Antioch Population within \n15 min. drive of hospitals"
+  ) %>% 
+  arrange(
+    desc(perc)
+  )
+
+ant_hospital_race_5min <-
+  cc_pop_race_2020 %>% 
+  mutate(race = factor(race, levels = unique(cc_pop_race_2020$race))) %>% 
+  left_join(
+    ant_block_hospital_isochrone_intersect_5min %>% 
+      select(block = GEOID10, perc_area) %>% 
+      st_drop_geometry()
+  ) %>% 
+  filter(!is.na(perc_area)) %>% 
+  mutate(
+    estimate = estimate * perc_area
+  ) %>% 
+  group_by(race) %>% 
+  summarize(estimate = sum(estimate)) %>% 
+  mutate(
+    estimate = drop_units(estimate),
+    perc = estimate/sum(estimate),
+    group = "Antioch Population within \n5 min. drive of hospitals"
+  ) %>% 
+  arrange(
+    desc(perc)
+  )
+```
+
+```{r}
+saveRDS(ant_race, "ant_race.rds")
+
+saveRDS(ant_hospital_race_5min, "ant_hospital_race_5min.rds")
+
+saveRDS(ant_hospital_race_15min, "ant_hospital_race_15min.rds")
+```
+
+```{r, eval = T}
+ant_race <- readRDS("ant_race.rds")
+
+# ant_hospital_race_5min <- readRDS("ant_hospital_race_5min.rds")
+
+ant_hospital_race_15min <- readRDS("ant_hospital_race_15min.rds")
+```
+
+```{r}
+rbind(ant_race, ant_hospital_race_5min) %>% 
+  ggplot(
+    aes(
+      x = "", 
+      y = perc, 
+      fill = reorder(race,desc(race)) %>% factor(levels = rev(census_race_categories))
+    )
+  ) + 
+  geom_bar(
+    stat = "identity", 
+    position = position_fill()
+  ) +
+  geom_text(
+    aes(label = paste0(round(perc*100),"%")),
+    position = position_fill(vjust = 0.5)
+  ) +
+  coord_polar(theta = "y") +
+  facet_wrap(~ group)  +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    legend.position = 'bottom'
+  ) + 
+  guides(
+    fill = guide_legend(nrow=3, byrow=TRUE)
+  ) +
+  labs(
+    fill = "Household\nRace"
+  ) + 
+  scale_fill_manual(values=c("#FC835D", "#FFDC1F", "#B0CD36","#65BAF3", "#865AF6"))
+```
+
+```{r, eval = T}
+rbind(ant_race, ant_hospital_race_15min) %>% 
+  ggplot(
+    aes(
+      x = "", 
+      y = perc, 
+      fill = reorder(race,desc(race)) %>% factor(levels = rev(census_race_categories))
+    )
+  ) + 
+  geom_bar(
+    stat = "identity", 
+    position = position_fill()
+  ) +
+  geom_text(
+    aes(label = paste0(round(perc*100),"%")),
+    position = position_fill(vjust = 0.5)
+  ) +
+  coord_polar(theta = "y") +
+  facet_wrap(~ group)  +
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    legend.position = 'bottom'
+  ) + 
+  guides(
+    fill = guide_legend(nrow=3, byrow=TRUE)
+  ) +
+  labs(
+    fill = "Household\nRace"
+  ) + 
+  scale_fill_manual(values=c("#FC835D", "#FFDC1F", "#B0CD36","#65BAF3", "#865AF6"))
+```
+
+```{r}
+sum(ant_hospital_race_15min$estimate) / sum(ant_race$estimate)
+```
+
+
+The graphs above compare overall racial demographics of the cities to the racial demographics of the blocks that are within a 15 minute driving distance to a hospital. Since hospitals are an important amenity in the medical well-being of a community, it would be desirable that racial inequity does not exist in the access to these facilities. For Antioch, the population within 15 minutes of a hospital is nearly identical in race breakdown to that of the entire city because 99% of the city's population satisfies this condition. Conversely, San Ramon has a far smaller portion of the Asian population and a larger portion of the Black or African American population that is able to access the hospitals. This result may be more related to the distribution of races within the city, with more of the Asian population living in suburban areas that are naturally farther from hospitals. There also be a relationship between these results and the income of residents, which would be interesting to explore further.
+
+### Conclusion
+
+When a new community is being planned and designed, it is always essential to look out for the best interests of the residents, especially regarding the accessibility and availability of amenities. The methodology we used in this report attempted to condense these goals into a convenient completeness score that can be used to compare regions within a city as well as across different cities. With knowledge of the spatial distribution of completeness scores within a city, it can be used by city officials to make informed decisions about future developments that will best suit the needs of its residents.

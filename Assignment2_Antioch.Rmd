@@ -1,0 +1,154 @@
+---
+title: "ANTIOCH 218y_vivekvajipey_A2"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(sf)
+library(tigris)
+library(censusapi)
+library(mapview)
+library(leaflet)
+library(mapboxapi)
+
+mb_access_token("pk.eyJ1IjoidnZhamlwZXkiLCJhIjoiY2t5dWxpN2xuMW9yYjJubnVrY2trdGF4ZCJ9.v4iJv_62J6JLt2rHxP-QTQ", install = T, overwrite = TRUE)
+```
+
+```{r}
+path <- "/Volumes/GoogleDrive/Shared drives/SFBI/Data Library/NHTS/nhts17-caltrans-tsdc-download/"
+pois <- st_read("/Volumes/GoogleDrive/Shared drives/SFBI/Data Library/OSM/gis_osm_pois_a_free_1.shp")
+```
+
+```{r}
+pois_summary <- pois %>% 
+  st_drop_geometry() %>% 
+  group_by(fclass) %>% 
+  count() %>% 
+  arrange(desc(n))
+
+pois_summary
+```
+
+```{r}
+cc_boundary <- counties("CA") %>% 
+  filter(NAME == "Contra Costa") %>% 
+  st_transform(st_crs(pois))
+
+# will take longer but handles larger POIs better
+cc_pois <- pois %>% 
+  .[cc_boundary,] %>% 
+  rename(amenity = fclass)
+```
+
+```{r}
+mapview(cc_pois, zcol = "amenity")
+```
+
+```{r}
+pois_filter <- pois %>% 
+  rename(amenity = fclass) %>% 
+  filter(amenity %in% c(
+    "supermarket",
+    "convenience",
+    "restaurant",
+    "school",
+    "park",
+    "hospital",
+    "doctors",
+    "dentist",
+    "library",
+    "sports_centre",
+    "swimming_pool",
+    "pharmacy"
+  ))
+
+mapview(pois_filter, zcol = "amenity")
+```
+
+```{r}
+saveRDS(pois_filter, "pois_filter.rds")
+pois_filter <- readRDS("pois_filter.rds")
+```
+
+```{r}
+cc_blocks <- blocks("CA","Contra Costa")
+```
+
+```{r}
+ant_boundary <- places("CA") %>% 
+  filter(NAME == "Antioch")
+
+ant_blocks <- cc_blocks %>% 
+  st_centroid() %>% 
+  .[ant_boundary, ] %>% 
+  st_drop_geometry() %>% 
+  left_join(cc_blocks %>% select(GEOID10)) %>% 
+  st_as_sf()
+
+mapview(ant_blocks)
+```
+
+```{r}
+saveRDS(ant_blocks, "ant_blocks.rds")
+ant_blocks <- readRDS("ant_blocks.rds")
+```
+
+```{r}
+ant_isochrones <- c("walking","driving") %>%
+  map_dfr(function(x){
+
+    mb_isochrone(
+      ant_blocks,
+      profile = x,
+      time = c(5,10,15)
+    ) %>%
+      mutate(mode = x)
+
+  })
+```
+
+```{r}
+ant_isochrones <- NULL
+  
+for(x in c("walking","driving")){
+    
+  for(y in c(5,10,15)){
+    
+    for(z in 1:nrow(ant_blocks)){
+      
+      if ((z %% 100) == 0) print(paste(x,y,z, sep = ","))
+      
+      temp <- mb_isochrone(
+        ant_blocks[z,],
+        profile = x,
+        time = y
+      ) %>% 
+        mutate(mode = x)
+      
+      ant_isochrones <- ant_isochrones %>% 
+        rbind(temp)
+      
+      if(z == nrow(ant_blocks)) saveRDS(ant_isochrones, "ant_isochrones.rds")
+      
+    }
+  }
+}
+```
+
+
+```{r}
+saveRDS(ant_isochrones, "ant_isochrones.rds")
+ant_isochrones <- readRDS("ant_isochrones.rds")
+```
+
+```{r}
+ant_access_raw <- ant_isochrones %>% 
+  st_make_valid() %>%
+  st_join(pois_filter) %>% 
+  filter(!is.na(osm_id)) %>% 
+  st_drop_geometry()
+```
+

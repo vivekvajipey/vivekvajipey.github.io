@@ -1,0 +1,170 @@
+---
+title: "1/6 demo"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(tigris)
+library(sf)
+library(leaflet)
+library(tidycensus)
+
+census_api_key("c8aa67e4086b4b5ce3a8717f59faa9a28f611dab")
+```
+
+```{r}
+pums_vars_2019 <- 
+  pums_variables %>%
+  filter(year == 2019, survey == "acs5")
+```
+
+```{r}
+bay_county_names <-
+  c(
+    "Alameda",
+    "Contra Costa",
+    "Marin",
+    "Napa",
+    "San Francisco",
+    "San Mateo",
+    "Santa Clara",
+    "Solano",
+    "Sonoma"
+  )
+
+bay_counties <-
+  counties("CA", cb = T, progress_bar = F) %>%
+  filter(NAME %in% bay_county_names)
+
+ca_pumas <-
+  pumas("CA", cb = T, progress_bar = F)
+
+bay_pumas <-
+  ca_pumas %>% 
+  st_centroid() %>% 
+  .[bay_counties, ] %>% 
+  st_set_geometry(NULL) %>% 
+  left_join(ca_pumas %>% select(GEOID10)) %>% 
+  st_as_sf()
+```
+
+
+```{r}
+ca_pums <- get_pums(
+  variables = c(
+    "PUMA",
+    "GRNTP",
+    "SMOCP",
+    "ADJHSG",
+    "HINCP",
+    "ADJINC"
+  ),
+  state = "CA",
+  year = 2019,
+  survey = "acs5"
+)
+
+bay_pums <-
+  ca_pums %>% 
+  filter(PUMA %in% bay_pumas$PUMACE10)
+```
+
+```{r}
+burden_threshold <- 0.3
+
+bay_burden <-
+  bay_pums %>% 
+  filter(HINCP > 0) %>%
+  filter(SPORDER == 1) %>% 
+  transmute(
+    PUMA,
+    weight = WGTP,
+    housingcost = ifelse(
+      SMOCP > 0,
+      SMOCP*12*as.numeric(ADJHSG),
+      GRNTP*12*as.numeric(ADJHSG)
+    ),
+    income = HINCP*as.numeric(ADJINC),
+    burden_perc = housingcost/income,
+    burden = housingcost - burden_threshold*income
+  )
+```
+
+```{r}
+bay_burden_pumas <-
+  bay_burden %>% 
+  mutate(
+    burdened = ifelse(
+      burden_perc >= burden_threshold,
+      weight,
+      0
+    ),
+    excess = ifelse(
+      burden < 0,
+      burden,
+      0
+    ),
+    burden = ifelse(
+      burden > 0,
+      burden,
+      0
+    )
+  ) %>% 
+  group_by(PUMA) %>% 
+  summarize(
+    burdened = sum(burdened),
+    households = sum(weight),
+    burden = sum(burden*weight),
+    excess = sum(excess*weight)
+  ) %>% 
+  mutate(
+    burdened_perc = burdened/households
+  ) %>% 
+  left_join(bay_pumas %>% select(PUMA = PUMACE10)) %>% 
+  st_as_sf()
+```
+```{r}
+sum(bay_burden_pumas$burdened)/sum(bay_burden_pumas$households)
+# 35 % of households pay more than 30 percent of their income (caveat: rich people overspending)
+```
+```{r}
+sum(bay_burden_pumas$burden) %>% prettyNum(",") %>% paste0("$",.)
+# "." represents %>% input
+```
+```{r}
+burden_pal1 <- colorNumeric(
+  palette = "Purples",
+  domain = bay_burden_pumas$burdened_perc
+)
+
+bay_burden_pumas %>% 
+  leaflet() %>% 
+  addProviderTiles(provider = providers$CartoDB.Positron) %>% 
+  addPolygons(
+    fillColor = ~burden_pal1(burdened_perc),
+    fillOpacity = 0.5,
+    color = "white",
+    weight = 0.5,
+    label = ~paste0(round(burdened_perc*100), "% of households paying 30%+ of income on housing"),
+    highlightOptions = highlightOptions(
+      weight = 2
+    )
+  ) %>% 
+  addLegend(
+    pal = burden_pal1,
+    values = ~burdened_perc,
+    title = "% Cost-burdened<br>households"
+  )
+```
+
+```{r}
+library(esri2sf)
+
+# > library(remotes)
+# Error in library(remotes) : there is no package called ‘remotes’
+# > install_github("yonghah/esri2sf")
+
+epa_zoning <- esri2sf("https://services8.arcgis.com/0IC8hha3hgQkmGoa/arcgis/rest/services/EastPaloAltoZoning_2021_WFL1/FeatureServer/1")
+```
+

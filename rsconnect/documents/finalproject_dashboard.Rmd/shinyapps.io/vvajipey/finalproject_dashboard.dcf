@@ -1,0 +1,13 @@
+name: finalproject_dashboard
+title: finalproject_dashboard
+username:
+account: vvajipey
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 5321950
+bundleId: 5370228
+url: https://vvajipey.shinyapps.io/finalproject_dashboard/
+when: 1639467537.80203
+lastSyncTime: 1639467537.80204
+asMultiple: FALSE
+asStatic: FALSE

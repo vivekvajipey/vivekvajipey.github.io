@@ -11,7 +11,7 @@ library(sf)
 library(leaflet)
 library(mapview)
 
-Sys.setenv(CENSUS_KEY="c8aa67e4086b4b5ce3a8717f59faa9a28f611dab")
+Sys.setenv(CENSUS_KEY="67343486046933b2d74f13923ac153228348f817")
 
 pums_2019_1yr <- getCensus(
   name = "acs/acs1/pums",
@@ -31,6 +31,7 @@ pums_2019_1yr <- getCensus(
     "AGEP"
   )
 )
+
 saveRDS(pums_2019_1yr, "a6_pums.rds")
 pums_2019_1yr <- readRDS("a6_pums.rds")
 

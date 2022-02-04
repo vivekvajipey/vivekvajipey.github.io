@@ -14,7 +14,7 @@ library(censusapi)
 library(mapview)
 library(readxl)
 
-Sys.setenv(CENSUS_KEY="c8aa67e4086b4b5ce3a8717f59faa9a28f611dab")
+Sys.setenv(CENSUS_KEY="67343486046933b2d74f13923ac153228348f817")
 ```
 
 ```{r include=FALSE}
@@ -142,6 +142,7 @@ ggplot(
   ggtitle("Asthma vs PM2.5 in the Bay Area")
 
 ```
+
 The line of best fit does not seem to fit the data very well, due to the rather jumbled and unevenly distributed nature of the data points. Between 8 and 9 µg/m^3, there is a large cluster of points that greatly exceed the asthma prevalence of the best fit line.
 
 

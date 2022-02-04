@@ -1,0 +1,240 @@
+---
+title: "218Y_vivekvajipey_A2"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(readxl)
+library(tigris)
+library(sf)
+library(leaflet)
+library(mapview)
+library(censusapi)
+library(mapboxapi)
+mb_access_token("pk.eyJ1IjoidnZhamlwZXkiLCJhIjoiY2t5dWxpN2xuMW9yYjJubnVrY2trdGF4ZCJ9.v4iJv_62J6JLt2rHxP-QTQ", install = T, overwrite = TRUE)
+```
+
+```{r}
+path <- "/Volumes/GoogleDrive/Shared drives/SFBI/Data Library/NHTS/nhts17-caltrans-tsdc-download/"
+pois <- st_read("/Volumes/GoogleDrive/Shared drives/SFBI/Data Library/OSM/gis_osm_pois_a_free_1.shp")
+survey_household <- read_csv(paste0(path,"survey_household.csv"))
+
+survey_person <- read.csv(paste0(path,"survey_person.csv")) # read_csv() appeared to trigger an error because of a formatting issue, so my second attempt is always the base R version of this function, read.csv(). It generally gives the same result.
+
+survey_trip <- read_csv(paste0(path,"survey_trip.csv"))
+
+survey_person_weights_7day <- read_csv(paste0(path,"survey_person_weights_7day.csv"))
+
+nhts_lookup <- read_excel(
+  paste0(path,"data_elements.xlsx"), 
+  sheet = "Value Lookup"
+)
+```
+
+```{r}
+person_weights <-
+  survey_person %>% 
+  left_join(
+    survey_person_weights_7day %>% 
+      select(
+        sampno,
+        perno,
+        wttrdfin
+      ),
+    by = c("sampno","perno")
+  )
+```
+
+```{r}
+bay_county_names <-
+  c(
+    "Alameda",
+    "Contra Costa",
+    "Marin",
+    "Napa",
+    "San Francisco",
+    "San Mateo",
+    "Santa Clara",
+    "Solano",
+    "Sonoma"
+  )
+
+bay_counties <-
+  counties("CA", cb = T, progress_bar = F) %>%
+  filter(NAME %in% bay_county_names)
+
+cbsas <- core_based_statistical_areas(cb = T, progress_bar = F)
+
+bay_cbsas <-
+  cbsas %>%
+  .[bay_counties %>% st_centroid(), ]
+```
+
+```{r}
+leaflet(bay_cbsas) %>% 
+  addTiles() %>% 
+  addPolygons(
+    label = ~paste0(GEOID,": ",NAME)
+  )
+```
+
+```{r}
+bay_trips <-
+  survey_trip %>% 
+  left_join(
+    survey_person,
+    by = c("sampno","perno")
+  ) %>% 
+  left_join(
+    survey_person_weights_7day %>% 
+      select(
+        sampno,
+        perno,
+        wttrdfin
+      ),
+    by = c("sampno","perno")
+  ) %>% 
+  left_join(
+    survey_household %>% select(
+      sampno,
+      hh_cbsa
+    )
+  ) %>% 
+  filter(hh_cbsa %in% bay_cbsas$GEOID)
+```
+```{r}
+pois_summary <- pois %>% 
+  st_drop_geometry() %>% 
+  group_by(fclass) %>% 
+  count() %>% 
+  arrange(desc(n))
+
+smc_boundary <- counties("CA") %>% 
+  filter(NAME == "San Mateo") %>% 
+  st_transform(st_crs(pois))
+
+smc_pois <- pois %>% 
+  .[smc_boundary, ] %>% 
+  rename(amenity = fclass)
+
+mapview(smc_pois, zcol = "amenity")
+
+smc_pois_filter <- smc_pois %>% 
+  filter(amenity %in% c(
+    "sports_centre"
+    #"park",
+    #"convenience",
+    #"restaurant",
+    #"supermarket",
+    #"library"
+  ))
+
+mapview(smc_pois_filter, zcol = "amenity")
+```
+
+```{r}
+smc_cbgs <- block_groups("CA","San Mateo")
+
+nfo_boundary <- places("CA") %>% 
+  filter(NAME == "North Fair Oaks")
+
+nfo_cbgs <- smc_cbgs %>% 
+  st_centroid() %>% 
+  .[nfo_boundary, ] %>% 
+  st_drop_geometry() %>% 
+  left_join(smc_cbgs %>% select(GEOID)) %>% 
+  st_as_sf()
+
+mapview(nfo_cbgs)
+```
+```{r}
+isochrone <- mb_isochrone(
+  nfo_cbgs,
+  profile = "walking",
+  time = c(5,10,15)
+)
+
+isochrone[1:3,] %>% mapview()
+```
+
+```{r}
+access_raw <- isochrone %>% 
+  st_make_valid() %>% 
+  st_join(smc_pois_filter) %>% 
+  st_drop_geometry() %>% 
+  filter(!is.na(osm_id))
+```
+
+COMPLETENESS SCORE
+```{r}
+amenity_preference <- data.frame(
+  amenity = c(
+    "park",
+    "convenience",
+    "restaurant",
+    "supermarket",
+    "library"
+  ),
+  amenity_value = c(
+    0.8,
+    0.6,
+    0.25,
+    1,
+    0.7
+  ),
+  amenity_quantity = c(
+    2,
+    5,
+    30,
+    1,
+    1
+  )
+) %>% 
+  mutate(
+    amenity_decay = -log(0.5)/(amenity_quantity)
+  )
+
+mode_preference <- data.frame(
+  mode = c(
+    "walking",
+    "biking",
+    "driving"
+  ),
+  mode_value = c(
+    1,
+    0.7,
+    0.5
+  ),
+  mode_reasonable = c(
+    15,
+    10,
+    20
+  )
+) %>% 
+  mutate(
+    mode_decay = -log(0.5)/mode_reasonable
+  )
+```
+
+```{r}
+complete_temp <- access_raw %>% 
+  left_join(
+    amenity_preference,
+    by = "amenity"
+  ) 
+%>% 
+  left_join(
+    mode_preference,
+    by = "mode"
+  ) %>% 
+  group_by(id,mode,amenity) %>% 
+  arrange(time) %>% 
+  mutate(
+    amenity_rank = row_number() - 1
+  ) %>% 
+  ungroup()
+```
+
