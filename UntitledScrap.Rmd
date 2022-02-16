@@ -1,0 +1,299 @@
+---
+title: "218Y A2 Demo"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(sf)
+library(tigris)
+library(censusapi)
+library(mapview)
+library(leaflet)
+library(mapboxapi)
+mb_access_token("pk.eyJ1IjoidnZhamlwZXkiLCJhIjoiY2t5dWxpN2xuMW9yYjJubnVrY2trdGF4ZCJ9.v4iJv_62J6JLt2rHxP-QTQ", install = T, overwrite = TRUE)
+```
+
+Load from shared drive
+
+```{r}
+pois <- st_read("G:/Shared drives/SFBI/Data Library/OSM/gis_osm_pois_a_free_1.shp")
+```
+
+```{r}
+pois_summary <- pois %>% 
+  st_drop_geometry() %>% 
+  group_by(fclass) %>% 
+  count() %>% 
+  arrange(desc(n))
+
+pois_summary
+```
+
+```{r}
+cc_boundary <- counties("CA") %>% 
+  filter(NAME == "Contra Costa") %>% 
+  st_transform(st_crs(pois))
+
+# will take longer but handles larger POIs better
+cc_pois <- pois %>% 
+  .[cc_boundary,] %>% 
+  rename(amenity = fclass)
+
+# # faster
+# smc_pois <- pois %>% 
+#   st_centroid() %>% 
+#   .[smc_boundary,] %>% 
+#   rename(amenity = fclass)
+```
+
+```{r}
+mapview(cc_pois, zcol = "amenity")
+```
+
+```{r}
+pois_filter <- pois %>% 
+  rename(amenity = fclass) %>% 
+  filter(amenity %in% c(
+    "supermarket",
+    "convenience",
+    "restaurant",
+    "school",
+    "park",
+    "hospital",
+    "doctors",
+    "dentist",
+    "library",
+    "sports_centre",
+    "swimming_pool",
+    "pharmacy"
+  ))
+
+mapview(pois_filter, zcol = "amenity")
+```
+
+```{r}
+saveRDS(pois_filter, "pois_filter.rds")
+pois_filter <- readRDS("pois_filter.rds")
+```
+
+```{r}
+cc_cbgs <- block_groups("CA","Contra Costa")
+```
+
+```{r}
+ant_boundary <- places("CA") %>% 
+  filter(NAME == "Antioch")
+
+ant_cbgs <- cc_cbgs %>% 
+  st_centroid() %>% 
+  .[ant_boundary, ] %>% 
+  st_drop_geometry() %>% 
+  left_join(cc_cbgs %>% select(GEOID)) %>% 
+  st_as_sf()
+
+mapview(ant_cbgs)
+```
+
+```{r}
+saveRDS(ant_cbgs, "ant_cbgs.rds")
+ant_cbgs <- readRDS("ant_cbgs.rds")
+```
+
+```{r}
+ant_isochrones <- c("walking","driving") %>% 
+  map_dfr(function(x){
+    
+    mb_isochrone(
+      ant_blocks,
+      profile = x,
+      time = c(5,10,15)
+    ) %>% 
+      mutate(mode = x)
+    
+  })
+```
+
+```{r}
+saveRDS(ant_isochrones, "ant_isochrones.rds")
+ant_isochrones <- readRDS("ant_isochrones.rds")
+```
+
+```{r}
+ant_access_raw <- ant_isochrones %>% 
+  st_make_valid() %>%
+  st_join(pois_filter) %>% 
+  filter(!is.na(osm_id)) %>% 
+  st_drop_geometry()
+``` 
+
+```{r}
+covid_testing <-
+  st_read("https://opendata.arcgis.com/datasets/d7d10caf1cec43e0985cc90fbbcf91cb_0.geojson")
+
+bay_county_names <-
+  c(
+    "Alameda",
+    "Contra Costa",
+    "Marin",
+    "Napa",
+    "San Francisco",
+    "San Mateo",
+    "Santa Clara",
+    "Solano",
+    "Sonoma"
+  )
+
+bay_counties <-
+  counties("CA", cb = T, progress_bar = F) %>%
+  filter(NAME %in% bay_county_names) %>% 
+  st_transform(st_crs(covid_testing))
+
+bay_covid_testing <-
+  covid_testing %>% 
+  .[bay_counties, ] %>% 
+  filter(status == "Open")
+```
+
+
+```{r}
+scc_covid_testing <-
+  bay_covid_testing %>% 
+  .[bay_counties %>% filter(NAME == "Santa Clara"), ]
+
+walk_10min <- mb_isochrone(
+  scc_covid_testing,
+  profile = "walking",
+  time = 10
+)
+
+scc_covid_testing_walk_10min <-
+  scc_covid_testing %>% 
+  st_drop_geometry() %>% 
+  cbind(walk_10min$geometry) %>% 
+  st_as_sf()
+```
+
+SAN RAM HOSPITALS - 5 min
+
+```{r}
+san_ram_drive_15min <-
+  san_ram_isochrones %>% 
+  filter(
+    time == 10,
+    mode == "driving"
+  ) %>% 
+  select(!c(mode, time))
+
+san_ram_pharm_drive_15min <-
+  san_ram_access_raw %>% 
+  filter(
+    time == 10
+  ) %>% 
+  filter(
+    mode == "driving"
+  ) %>% 
+  filter(
+    amenity == "pharmacy"
+  ) %>% 
+  left_join(
+    san_ram_drive_15min,
+    by = "id"
+  ) %>% 
+  st_as_sf()
+```
+
+```{r}
+leaflet() %>% 
+  addMapboxTiles(
+    style_id = "streets-v11",
+    username = "mapbox"
+  ) %>%
+  addPolygons(
+    data = san_ram_pharm_drive_15min,
+    label = ~name
+  )
+```
+
+```{r}
+sf_use_s2(FALSE)
+
+san_ram_blocks_2 <- 
+  ant_blocks %>% 
+  st_transform(26910) %>% 
+  mutate(original_area = st_area(.))
+
+san_ram_block_pharm_intersect <-
+  san_ram_blocks_2 %>% 
+  st_intersection(
+    san_ram_pharm_drive_15min %>% 
+      st_union() %>% 
+      st_transform(26910)
+  ) %>% 
+  mutate(
+    leftover_area = st_area(.),
+    perc_area = leftover_area / original_area
+  )
+```
+
+```{r}
+ant_race <-
+  cc_pop_race_2020 %>% 
+  filter(
+    block %in% ant_blocks$GEOID10
+  ) %>% 
+  mutate(race = factor(race, levels = unique(cc_pop_race_2020$race))) %>% 
+  group_by(race) %>% 
+  summarize(estimate = sum(estimate)) %>% 
+  mutate(
+    perc = estimate/sum(estimate),
+    group = "Full Population"
+  ) %>% 
+  arrange(
+    desc(perc)
+  )
+  
+ant_pharm_race <-
+  cc_pop_race_2020 %>% 
+  mutate(race = factor(race, levels = unique(cc_pop_race_2020$race))) %>% 
+  left_join(
+    ant_block_pharm_intersect %>% 
+      select(block = GEOID10, perc_area) %>% 
+      st_drop_geometry()
+  ) %>% 
+  filter(!is.na(perc_area)) %>% 
+  mutate(
+    estimate = estimate * perc_area
+  ) %>% 
+  group_by(race) %>% 
+  summarize(estimate = sum(estimate)) %>% 
+  mutate(
+    estimate = drop_units(estimate),
+    perc = estimate/sum(estimate),
+    group = "Antioch Population within \n15 min. drive of pharmacies"
+  ) %>% 
+  arrange(
+    desc(perc)
+  )
+```
+
+```{r}
+san_ram_5_min_hospitals <-
+  san_ram_access_raw %>% 
+  filter(
+    amenity == "hospital",
+    time == 5
+  )
+```
+
+```{r}
+ant_5_min_hospitals <-
+  ant_access_raw %>% 
+  filter(
+    amenity == "hospital",
+    time == 5
+  )
+```
+
+

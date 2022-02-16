@@ -1,0 +1,962 @@
+---
+title: "218Y_vivekvajipey_A3"
+output: html_document
+---
+
+It is widely known that greenhouse gas emissions are highly influential in trapping the Earth's radiation, thereby contributing to global warming. With this knowledge, it is essential that we effectively track the total emissions from various sources, such as vehicles and buildings, in order to develop our cities to be less detrimental to the climate. In this report, we will be using one of the most wealthy zip codes in both the Bay Area and the United States, 94027, which mainly contains Atherton, as well as parts of North Fair Oaks and Woodside. Atherton is an affluent suburban town with an average income exceeding $450,000, so studying this zipcode will provide insights into the emissions of such a wealthy location.
+
+## Vehicle Emissions
+
+First, we will estimate the emissions attributable to transportation, which can be done by using LODES vehicle emissions data. In our analysis, internal trips were not included due to their relatively insignificant effect (comprising on 2% of trips from 2013 to 2019). The data were used to determine the total number of miles that were traveled by vehicles, which were subsequently converted into emissions data using the California Air Resources Board (CARB) Emission Factors (EMFAC) model. It should be noted that 4 percent of the census block groups used were missing values and thus, the final values should be recognized as underestimates. The analysis methods determined that the total greenhouse gas emissions from Atherton from 2013 to 2019 was 8849.754 metric tons of CO2 equivalents.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, eval = F)
+
+library(tidyverse)
+library(sf)
+library(tigris)
+library(censusapi)
+library(mapview)
+library(leaflet)
+library(mapboxapi)
+library(tidycensus)
+
+Sys.setenv(CENSUS_KEY="67343486046933b2d74f13923ac153228348f817")
+mb_access_token("pk.eyJ1IjoiYnJpYW5hbWFybyIsImEiOiJja3l1bm1memExcHE1MnF0OHp2ODV6MGN1In0.8fAzGLv5OQahCJuKM6p9vg", install = T, overwrite = TRUE)
+```
+
+```{r}
+ca_od_read <- read_csv("G:/Shared drives/SFBI/Data Library/LODES/ca_od_main_Jt01_2019.csv.gz")
+```
+
+```{r}
+ca_od <- ca_od_read %>% 
+  mutate(
+    h_block = substr(h_geocode,1,15),
+    w_block = substr(h_geocode,1,15)
+  ) %>% 
+```
+
+```{r}
+zctas <- zctas()
+
+zip <- zctas %>% 
+  filter(GEOID10 == "94027")
+
+blocks <- blocks("CA")
+
+zip_blocks <- blocks %>% 
+  st_centroid() %>% 
+  .[zip, ]
+
+zip_od <- ca_od_read %>% 
+  filter(
+    h_geocode %in% zip_blocks$GEOID10 |
+      w_geocode %in% zip_blocks$GEOID10
+  )
+
+rm(ca_od_read)
+
+full_zip_od <- 2013:2019 %>% 
+  map_dfr(function(year){
+    print(year)
+    
+    temp <- read_csv(paste0("G:/Shared drives/SFBI/Data Library/LODES/ca_od_main_JT01_", year, ".csv.gz")) %>% 
+      filter(
+        h_geocode %in% zip_blocks$GEOID10 |
+          w_geocode %in% zip_blocks$GEOID10
+      ) %>% 
+      mutate(year = year)
+    
+    saveRDS(temp, paste0("temp_od_", year, ".rds"))
+    
+    return(temp)
+  })
+
+saveRDS(full_zip_od, "full_zip_od.rds")
+```
+
+```{r}
+full_zip_od <- readRDS("full_zip_od.rds")
+```
+
+
+```{r}
+full_zip_od_clean <- full_zip_od %>% 
+  select(-createdate) %>% 
+  filter(!(
+    h_geocode %in% zip_blocks$GEOID10 &
+      w_geocode %in% zip_blocks$GEOID10
+  )) %>% # Filtering out internal trips
+  mutate(
+    direction = ifelse(
+      h_geocode %in% zip_blocks$GEOID10,
+      "outbound",
+      "inbound"
+    )
+  )
+
+full_zip_od_routing <- full_zip_od_clean %>% 
+  mutate(
+    origin = ifelse(
+      direction == "inbound",
+      h_geocode,
+      w_geocode
+    ),
+    cbg = origin %>% substr(1,12),
+    tract = origin %>% substr(1,11)
+  ) %>% 
+  filter(!duplicated(cbg))
+
+saveRDS(full_zip_od_routing, "full_zip_od_routing_cbg.rds")
+```
+
+```{r}
+full_zip_od_routing <- readRDS("full_zip_od_routing_cbg.rds")
+```
+
+```{r}
+cbgs = block_groups("CA", cb= T)
+
+zip_od_origin <- 
+  full_zip_od_routing %>% 
+  select(cbg) %>% 
+  left_join(cbgs %>% select(cbg = GEOID)) %>% 
+  st_as_sf() %>% 
+  st_centroid() %>% 
+  st_coordinates()
+
+zip_od_destination <-
+  zip %>% 
+  st_centroid() %>% 
+  st_coordinates()
+
+```
+
+```{r}
+zip_od_route <- 
+  1:ceiling(nrow(zip_od_origin)/1000) %>% 
+  map_dfr(function(y){
+    
+    print(y)
+    
+    temp <- (y * 1000 - 999) : pmin(y * 1000, nrow(zip_od_origin)) %>% 
+      map_dfr(function(x){
+        tryCatch(
+          mb_directions(
+            origin = zip_od_origin[x, ],
+            destination = zip_od_destination,
+            profile = "driving-traffic"
+          ) %>% 
+            mutate(id = x),
+          error = function(e){
+            data.frame(id = x)
+          }
+        )
+      }) %>% 
+      st_as_sf()
+      
+      saveRDS(temp, paste0("cbgTemp",y,".rds"))
+      
+      return(temp)
+    
+  })
+
+saveRDS(zip_od_route, "zip_od_route_cbg")
+```
+
+```{r}
+zip_od_route <- readRDS("zip_od_route_cbg")
+```
+```{r}
+mapview(zip_od_route)
+```
+
+```{r}
+full_zip_od_routed <- full_zip_od_routing %>% 
+  cbind(zip_od_route)
+
+saveRDS(full_zip_od_routed, "full_zip_od_routed.rds")
+
+full_zip_od_final <- full_zip_od_clean %>% 
+  mutate(
+    origin = ifelse(
+      direction == "inbound",
+      h_geocode,
+      w_geocode
+    ),
+    cbg = substr(origin, 1, 12)
+  ) %>% 
+  left_join(full_zip_od_routed %>%  select(cbg, duration, distance)) %>% 
+  mutate(
+    visits = S000 * 261 #Vists per person per year
+  )
+
+saveRDS(full_zip_od_final, "full_zip_od_final_cbg.rds")
+```
+
+
+
+```{r}
+acs_vars_2019_5yr <-
+  listCensusMetadata(
+    name = "2019/acs/acs5",
+    type = "variables"
+  )
+```
+
+
+```{r}
+travel_time_mode <-
+  counties("CA", cb = T, progress_bar = F) %>%
+  pull(COUNTYFP) %>% 
+  map_dfr(function(x){
+    getCensus(
+      name = "acs/acs5",
+      vintage = 2019,
+      region = "block group:*",
+      regionin = paste0("state:06+county:", x),
+      vars = "group(B08134)"
+    )
+  }) %>% 
+  mutate(
+    cbg =
+      paste0(state,county,tract,block_group)
+  ) %>%
+  select(!c(GEO_ID,state,county,tract,block_group,NAME) & !ends_with(c("EA","MA","M"))) %>%
+  pivot_longer(
+    ends_with("E"),
+    names_to = "variable",
+    values_to = "estimate"
+  ) %>%
+  left_join(
+    acs_vars_2019_5yr %>% 
+      select(name, label), 
+    by = c("variable" = "name")
+  ) %>% 
+  select(-variable) %>% 
+  separate(
+    label,
+    into = c(NA, NA, "total", "mode", "carpool", "time"),
+    sep = "!!"
+  ) %>% 
+  mutate(
+    mode = case_when(
+      total %in% c(
+        "Less than 10 minutes",
+        "10 to 14 minutes",
+        "15 to 19 minutes",
+        "20 to 24 minutes",
+        "25 to 29 minutes",
+        "30 to 34 minutes",
+        "35 to 44 minutes",
+        "45 to 59 minutes",
+        "60 or more minutes"
+      ) ~ "Total",
+      mode == "Drove alone:" ~ mode,
+      carpool %in% c(
+        "In 2-person carpool:",
+        "In 3-or-more-person carpool:"
+      ) ~ carpool
+    ),
+    time = case_when(
+      mode == "Total" ~ total,
+      mode == "Drove alone:" ~ carpool,
+      mode == carpool ~ time
+    )
+  ) %>% 
+  filter(!is.na(time)) %>% 
+  select(-total, -carpool) %>% 
+  pivot_wider(
+    names_from = mode,
+    values_from = estimate
+  ) %>% 
+  mutate(
+    perc_veh1 = `Drove alone:`/Total,
+    perc_veh2 = `In 2-person carpool:`/Total,
+    perc_veh3 = `In 3-or-more-person carpool:`/Total
+  )
+```
+
+```{r}
+zip_trips <-
+    full_zip_od_final %>% 
+  mutate(
+    time = case_when(
+      duration < 10 ~ "Less than 10 minutes",
+      duration < 15 ~ "10 to 14 minutes",
+      duration < 20 ~ "15 to 19 minutes",
+      duration < 25 ~ "20 to 24 minutes",
+      duration < 30 ~ "25 to 29 minutes",
+      duration < 35 ~ "30 to 34 minutes",
+      duration < 45 ~ "35 to 44 minutes",
+      duration < 60 ~ "45 to 59 minutes",
+      TRUE ~ "60 or more minutes"
+    )
+  ) %>% 
+  left_join(
+    travel_time_mode %>% 
+      select(
+        cbg,
+        time,
+        perc_veh1,
+        perc_veh2,
+        perc_veh3
+      ),
+    by = c("cbg", "time")
+  ) %>% 
+  mutate(
+    vehicles = 
+      visits * perc_veh1 + 
+      visits * perc_veh2 / 2 +
+      visits * perc_veh3 / 3,
+    vmt = vehicles * distance * 2
+  )
+saveRDS(zip_trips, "zip_trips.rds")
+```
+
+```{r}
+zip_trips <- readRDS("zip_trips.rds")
+
+sum(zip_trips$vmt, na.rm = T)/7168/6
+```
+
+```{r}
+zip_trips %>% 
+  group_by(year, direction) %>% 
+  summarise(Visits = sum(visits)) %>% 
+  group_by(year) %>% 
+  summarise(NetVisits = Visits - lag(Visits, default = Visits[1])) %>% 
+  filter(NetVisits != 0) %>% 
+  ggplot() + 
+  geom_col(aes(x = year, y = NetVisits), fill = "darkgreen") +
+  labs(x = "Year", y = "Number of People Leaving")
+```
+
+
+```{r}
+#Internal trips may really be neglible but could do it
+#Compare to tract, get time from tract, summarize from tract, left joining just on the row that are zero 
+# (replacing zero trips with average of tract)
+# Take aggregate census group on tract (first 11 letters) and summarize
+emfac <- 
+  read_csv("EMFAC.csv", skip = 8) %>% 
+  transmute(
+    Category = `Vehicle Category`,
+    Fuel_Type = Fuel,
+    Percent_Trips = Trips/sum(Trips),
+    Percent_Miles = `Total VMT`/sum(`Total VMT`),
+    `MTCO2_Running_Exhaust` = CO2_RUNEX/`Total VMT`,
+    `MTCO2_Start_Exhaust` = CO2_STREX/Trips
+  )
+```
+
+```{r}
+zip_trips_ghg <-
+  emfac %>% 
+  mutate(
+    trips = Percent_Trips * sum(zip_trips$visits, na.rm = T),
+    vmt = Percent_Miles * sum(zip_trips$vmt, na.rm = T),
+    ghg = vmt*MTCO2_Running_Exhaust + trips*MTCO2_Start_Exhaust*2
+  )
+```
+
+```{r}
+#sum(zip_trips_ghg$ghg)
+
+#sum(is.na(zip_trips$vehicles)) / nrow(zip_trips)
+```
+
+```{r}
+cumulative <-
+  emfac %>% 
+  mutate(
+    trips = Percent_Trips * sum(zip_trips$visits[which(zip_trips$year == 2013)], na.rm = T),
+    vmt = Percent_Miles * sum(zip_trips$vmt[which(zip_trips$year == 2013)], na.rm = T),
+    ghg = vmt*MTCO2_Running_Exhaust + trips*MTCO2_Start_Exhaust*2,
+    year = 2013
+  )
+
+
+  for (year in 2014:2019) {
+  thisYear <- emfac %>% 
+  mutate(
+    trips = Percent_Trips * sum(zip_trips$visits[which(zip_trips$year == year)], na.rm = T),
+    vmt = Percent_Miles * sum(zip_trips$vmt[which(zip_trips$year == year)], na.rm = T),
+    ghg = vmt*MTCO2_Running_Exhaust + trips*MTCO2_Start_Exhaust*2,
+    year= year
+  ) 
+  
+  cumulative <- rbind(cumulative, thisYear)
+    
+  }
+
+zip_trips_ghg_yearly <- cumulative
+
+# sum(zip_trips_ghg_yearly$ghg)
+
+saveRDS(zip_trips_ghg_yearly, "zip_trips_ghg_yearly.rds")
+```
+
+## Building Emissions
+
+To analyze building emissions, we used PG&E data to track emissions due to residential and commercial electricity and gas usage from 2013 to 2019. In the raw data, there were a couple of issues that needed to be resolved. First, the 2017 Q4 data double-counted the September energy usage from Q3, which had to be filtered out in the aggregation step. Additionally, the labeling of the 2014 Gas Use data used a different name for the units, which needed to be changed to “TOTALTHM” to be combined with the other years. The electricity and gas energy use data were converted to giga-British Thermal Units (GBTU) for ease of comparison.
+
+```{r}
+pge_elec_emissions_factor <-
+  data.frame(
+    year = c(2013:2019),
+    factor = c(427,435,405,294,210,206,2.68)
+  )
+
+pge_elec_emissions_factor %>% 
+  ggplot() +
+  geom_line(
+    aes(
+      x = year,
+      y = factor
+    )
+  ) +
+  labs(
+    x = "Year",
+    y = "Pounds of CO2 per MHh",
+    title = "PG&E electricity emissions rate"
+  )
+```
+
+```{r}
+pge_data <- 
+  2013:2019 %>% 
+  map_dfr(function(yr){
+    
+    factor <- 
+      pge_elec_emissions_factor %>% 
+      filter(year == yr) %>% 
+      pull(factor)
+    
+    1:4 %>% 
+      map_dfr(function(quarter){
+        
+        c("Electric","Gas") %>% 
+          map_dfr(function(type){
+            
+            filename <- 
+              paste0(
+                "pge/PGE_",
+                yr,
+                "_Q",
+                quarter,
+                "_",
+                type,
+                "UsageByZip.csv"
+              )
+            
+            temp <- read_csv(filename)
+            
+            if(yr == 2017 & quarter == 4) {
+              temp <- 
+                temp %>% 
+                filter(MONTH != 9)
+            }
+            
+            print(filename)
+            
+            temp <-
+              temp %>% 
+              rename_all(toupper) %>% 
+              mutate(
+                TOTALKBTU = ifelse(
+                  substr(CUSTOMERCLASS,1,1) == "E",
+                  TOTALKWH * 3.412,
+                  TOTALTHM * 99.976
+                ),
+                TOTALTCO2E = ifelse(
+                  substr(CUSTOMERCLASS,1,1) == "E",
+                  TOTALKWH/1000 * factor * 0.000453592,
+                  TOTALTHM * 0.00531
+                )
+              ) %>% 
+              select(
+                ZIPCODE,
+                YEAR,
+                MONTH,
+                CUSTOMERCLASS,
+                TOTALKBTU,
+                TOTALTCO2E,
+                TOTALCUSTOMERS
+              )
+            
+          })
+        
+      })
+    
+  })
+```
+
+```{r}
+ath_pge_data <-
+  pge_data %>% 
+  filter(ZIPCODE == 94027) %>% 
+  filter(CUSTOMERCLASS %in% c(
+    "Elec- Commercial",
+    "Elec- Residential",
+    "Gas- Commercial",
+    "Gas- Residential"
+  )) %>% 
+  mutate(
+    ENERGYTYPE = ifelse(
+      CUSTOMERCLASS == "Elec- Commercial",
+      "EC",
+      ifelse(
+        CUSTOMERCLASS == "Elec- Residential",
+        "ER",
+        ifelse(
+          CUSTOMERCLASS == "Gas- Commercial",
+          "GC",
+          "GR"
+          )
+        )
+      )
+    ) %>% 
+  group_by(ZIPCODE, ENERGYTYPE, YEAR) %>% 
+  summarize(
+    TOTALKBTU = sum(TOTALKBTU, na.rm=T),
+    TOTALTCO2E = sum(TOTALTCO2E, na.rm=T), 
+    TOTALCUSTOMERS = mean(TOTALCUSTOMERS, na.rm=T),
+    CUSTOMERCLASS = CUSTOMERCLASS
+  ) %>% 
+  group_by(ENERGYTYPE, YEAR, CUSTOMERCLASS) %>%
+  summarize(across(
+    c(TOTALKBTU,TOTALTCO2E,TOTALCUSTOMERS),
+    ~sum(.,na.rm=T)
+  ))
+
+saveRDS(ath_pge_data, "ath_pge_data.rds")
+```
+
+```{r, eval = T}
+ath_pge_data <- readRDS("ath_pge_data.rds")
+
+ggplot(
+  ath_pge_data, 
+  aes(
+    x = as.factor(YEAR), 
+    y = TOTALKBTU/1000000
+  )
+) + 
+  geom_bar(stat = "identity", aes(fill = ENERGYTYPE), position = "dodge") + 
+  labs(x = "Year", y = "GBTU", title = "Atherton Annual Residential and Commercial Energy Usage, 2013 to 2019") + 
+  scale_fill_discrete(name="Energy Type",labels = c("Commerical Electricity", "Residential Electricity", "Commercial Gas", "Residential Gas"))
+```
+
+From the bar graph above, it is evident that Atherton’s energy usage is predominantly residential rather than commercial, with residential gas use consistently being significantly higher than residential electricity. Also, there was a sharp drop-off in residential energy use from 2014 to 2015, which is followed by a gradual increase in residential gas use in the recent years.
+
+
+```{r}
+years <- 2013:2019
+
+atherton_pop <- data.frame(matrix(ncol = 2, nrow = 0))
+colnames(atherton_pop) <- c("YEAR", "population")
+
+for (year in years) { 
+  temp <- 
+    getCensus(
+      name = "acs/acs5",
+      vintage = year,
+      region = "zip code tabulation area:*",
+      regionin = "state:06",
+      vars = "group(B01001)"
+    ) %>% 
+    filter(
+      zip_code_tabulation_area == 94027
+    ) %>% 
+    transmute(
+      YEAR = year,
+      population = B01001_001E
+    )
+    
+  atherton_pop <- rbind(
+    atherton_pop, 
+    temp
+    )
+}
+
+ath_pge_pop <-
+  ath_pge_data %>% 
+  group_by(
+   YEAR 
+  ) %>% 
+  left_join(
+    atherton_pop
+  ) %>% 
+  mutate(
+    KBTU_PER_PERSON = TOTALKBTU / population,
+    USETYPE = ifelse(ENERGYTYPE %in% c("ER", "GR"), "Residential", "Commercial"),
+    ENERGY = ifelse(ENERGYTYPE %in% c("EC", "ER"), "Electricity", "Gas")
+  )
+
+saveRDS(ath_pge_pop, "ath_pge_pop.rds")
+```
+
+```{r}
+ca_wac_2013to2019 <- NULL
+
+for(year in years) {
+  
+  filename <- 
+    paste0(
+      "wac/ca_wac_S000_JT00_",
+      year,
+      ".csv.gz"
+    )
+
+  print(filename)
+  
+  temp <- read_csv(filename)
+  
+  temp <- temp %>% 
+    mutate(
+      year = year
+    )
+  
+  ca_wac_2013to2019 <- rbind(ca_wac_2013to2019, temp)
+
+  saveRDS(ca_wac_2013to2019, "ca_wac_2013to2019.rds")
+}
+
+saveRDS(ca_wac_2013to2019, "ca_wac_2013to2019.rds")
+ca_wac_2013to2019 <- readRDS("ca_wac_2013to2019.rds");
+```
+
+```{r}
+san_mateo_blocks <- blocks("CA","San Mateo")
+
+atherton_boundary <- zctas("CA") %>% 
+  filter(GEOID10 == "94027")
+
+atherton_blocks <- san_mateo_blocks %>% 
+  st_centroid() %>% 
+  .[atherton_boundary, ] %>% 
+  st_drop_geometry() %>% 
+  left_join(san_mateo_blocks %>% select(GEOID10)) %>% 
+  st_as_sf() %>% 
+  select(
+    GEOID10
+  )
+
+saveRDS(atherton_blocks, "atherton_blocks.rds")
+atherton_blocks <- readRDS("atherton_blocks.rds")
+```
+
+```{r}
+ath_wac_2013to2019 <-
+  ca_wac_2013to2019 %>% 
+  transmute(
+    YEAR = year,
+    GEOID10 = w_geocode,
+    total_jobs = C000
+  ) %>% 
+  right_join(
+    atherton_blocks
+  ) %>% 
+  filter(
+    !is.na(YEAR)
+  ) %>% 
+  group_by(
+    YEAR
+  ) %>% 
+  summarize(
+    total_jobs = sum(total_jobs)
+  )
+
+ath_pge_complete <-
+  ath_pge_pop %>% 
+  group_by(
+   YEAR
+  ) %>% 
+  left_join(
+    ath_wac_2013to2019
+  ) %>% 
+  mutate(
+    KBTU_PER_JOB = TOTALKBTU / total_jobs,
+    USETYPE = ifelse(ENERGYTYPE %in% c("ER", "GR"), "Residential", "Commercial"),
+    ENERGY = ifelse(ENERGYTYPE %in% c("EC", "ER"), "Electricity", "Gas")
+  )
+
+saveRDS(ath_pge_complete, "ath_pge_complete.rds")
+```
+
+```{r}
+ath_pge_complete <- readRDS("ath_pge_complete.rds")
+
+ath_pge_complete %>%
+  ggplot(
+    aes(
+      x = YEAR,
+      y = KBTU_PER_JOB
+    )
+  ) + 
+  geom_line(
+    aes(
+      color = USETYPE,
+      linetype = ENERGY
+    ),
+    size = 1
+  ) +
+  labs(x = "Year", y = "kBTUs per Person", title = "Atherton Annual Energy Use Intensity per Job, 2013 to 2019", color ="Use Type", linetype = "Energy Type") +
+  scale_linetype_manual(values = c("solid","dotted"), labels = c("Electricity","Gas"))
+```
+
+```{r}
+atherton_CDD <- read_csv("atherton_CDD.csv")
+
+atherton_CDD <- 
+  atherton_CDD %>% 
+  select(
+    year,
+    `CanESM2 (Average)`
+  ) %>% 
+  filter(
+    year %in% years
+  ) %>% 
+  rename(
+    YEAR = year,
+    CDD = `CanESM2 (Average)`
+  )
+
+atherton_HDD <- read_csv("atherton_HDD.csv")
+
+atherton_HDD <- 
+  atherton_HDD %>% 
+  select(
+    year,
+    `CanESM2 (Average)`
+  ) %>% 
+  filter(
+    year %in% years
+  ) %>% 
+  rename(
+    YEAR = year,
+    HDD = `CanESM2 (Average)`
+  )
+  
+ath_pge_complete <-
+  ath_pge_complete %>% 
+  group_by(
+   YEAR
+  ) %>% 
+  left_join(
+    atherton_CDD
+  ) %>% 
+  left_join(
+    atherton_HDD
+  ) %>% 
+  mutate(
+    NORM_KBTU = ifelse(
+      ENERGYTYPE == "GR",
+      KBTU_PER_PERSON / HDD,
+      ifelse(
+        ENERGYTYPE == "ER",
+        KBTU_PER_PERSON / CDD,
+        ifelse(
+          ENERGYTYPE == "GC",
+          KBTU_PER_JOB / HDD,
+          KBTU_PER_PERSON / CDD
+        )
+      )
+    )
+  )
+
+saveRDS(ath_pge_complete, "ath_pge_complete.rds")
+```
+
+We then used Census population data for the 94027 zip code tabulation area to estimate the population, which allows us to calculate the residential energy use per resident. Similarly, the LODES Workplace Area Characteristics (WAC) data conveniently allows us to estimate the total number of jobs that are located within the zip code, which is used to calculate the commercial energy use per job. These data are further normalized by incorporating data from the Cal-Adapt Degree Day tool, where heating and cooling degree days quantify the energy required to moderate the temperature of a building. Since buildings are generally cooled using electricity-based air conditioning systems and are heated using gas, the gas energy usage rates are divided by the total annual degree days and the electricity energy usage rates are divided by the total annual cooling degree days.
+
+```{r, eval = T}
+ath_pge_complete <- readRDS("ath_pge_complete.rds")
+
+ath_pge_complete %>%
+  ggplot(
+    aes(
+      x = YEAR,
+      y = NORM_KBTU
+    )
+  ) + 
+  geom_line(
+    aes(
+      color = USETYPE,
+      linetype = ENERGY
+    ),
+    size = 1
+  ) +
+  labs(x = "Year", y = "kBTUs", title = "Atherton Normalized Annual Energy Use Intensity, 2013 to 2019", color ="Use Type", linetype = "Energy Type") +
+  scale_linetype_manual(values = c("solid","dotted"), labels = c("Electricity","Gas"))
+```
+
+In this graph, residential gas is measured in KBTU per resident per HDD, residential electricity in KBTU per resident per CDD, commercial gas in KBTU/job/HDD, and commercial electricity in KBTU/job/CDD. In this normalized visualization, the stark contrast between residential and commercial energy usage persists. Moreover, the same drastic drop in residential energy usage from 2014 to 2015 exists. However, the gradual upward trend in residential gas and electricity use from 2016 to 2019 is no longer present.
+
+```{r}
+yearly_vehicle_emissions <- 
+  zip_trips_ghg_yearly %>% 
+  group_by(
+    year
+  ) %>% 
+  summarize(
+    ghg = sum(ghg),
+  ) %>% 
+  mutate(
+    type = "vehicle"
+  )
+
+yearly_building_emissions <- 
+  ath_pge_complete %>% 
+  group_by(
+    YEAR
+  ) %>% 
+  summarize(
+    ghg = sum(TOTALTCO2E)
+  ) %>% 
+  rename(
+    year = YEAR
+  ) %>% 
+  mutate(
+    type = "building"
+  )
+
+atherton_emissions <-
+  yearly_building_emissions %>% 
+  rbind(
+    yearly_vehicle_emissions
+  )
+
+saveRDS(atherton_emissions, "atherton_emissions.rds")
+```
+
+```{r, eval = T}
+atherton_emissions <- readRDS("atherton_emissions.rds")
+
+atherton_emissions %>% 
+  filter(
+    type == "building"
+  ) %>% 
+  ggplot(
+    aes(x=year, y=ghg)
+    ) +
+  geom_bar(stat="identity",  fill = "#F8766D") + 
+  labs(x = "Year", y = "Emissions (metric tons of CO2 Equivalent)", title = "Atherton Total Building Emissions, 2013 to 2019") +
+  theme(legend.position = "none")
+```
+
+Similar to the previous bar graph, this graph reinforces the total emissions magnitude trend in which there was a sharp drop-off from 2014 to 2015. In contrast with the split bar graph, the total building emissions show a downward trend in building emissions from 2015 to 2019.
+
+```{r, eval = T}
+atherton_emissions %>% 
+  filter(
+    type == "vehicle"
+  ) %>% 
+  ggplot(
+    aes(x=year, y=ghg)
+    ) +
+  geom_bar(stat="identity", fill = "#00BFC4") + 
+  labs(x = "Year", y = "Emissions (metric tons of CO2 Equivalent)", title = "Atherton Total Vehicle Emissions, 2013 to 2019") +
+  theme(legend.position = "none")
+```
+
+In this graph of vehicle emissions, there appears to have been a sharp increase in emissions from 2013 to 2014 with an undulating trend in the following years. As compared to the building emissions, the vehicle emissions have not experienced the recent decline and the highest emissions values were observed in 2018 rather than 2014.
+
+```{r, eval = T}
+atherton_emissions %>% 
+  ggplot(aes(x=year, y=ghg, group=type)) +
+    geom_line(
+      aes(color = type)
+    ) +
+    scale_y_continuous(trans = "log10") +
+    labs(x = "Year", y = "log(Emissions in metric tons of CO2e) ()", title = "Atherton Total Building and Vehicle Emissions, 2013 to 2019")
+```
+
+This chart uses the log scale y-axis to compare building and vehicle emissions in Atherton. It is very clear that the building emissions in this wealthy, suburban town are magnitudes greater than the vehicle emissions, with the temporal changes following approximately opposite trends. Since the building emissions are so much greater than the vehicle emissions, the overall trend of emissions in Atherton is much closer to the downward building emissions trend.
+
+```{r}
+atherton_stats <-
+  atherton_pop %>% 
+  left_join(
+    ath_wac_2013to2019
+  ) %>% 
+  left_join(
+    atherton_CDD
+  ) %>% 
+  left_join(
+    atherton_HDD
+  )
+
+saveRDS(atherton_stats, "atherton_stats.rds")
+```
+
+## Reflections
+```{r, eval = T}
+atherton_stats <- readRDS("atherton_stats.rds")
+
+colors2 <- c("Population" = "darkgreen", "Jobs" = "darkblue")
+
+atherton_stats %>%
+  ggplot(
+    aes(
+      x = YEAR,
+    )
+  ) + 
+  geom_line(aes(y = population, color = "Population")) + 
+  geom_line(aes(y = total_jobs, color= "Jobs")) +
+  labs(x = "Year", y = "Number of People/Jobs", title = "Atherton Population and Jobs, 2013 to 2019", color = "Legend") +
+  scale_color_manual(values = colors2) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 8000))
+```
+
+This graph compares the number of people living in Atherton to the number of jobs in Atherton. It is evident that the population is consistently greater than double the number of jobs in the town, which provides insights into the type of suburban town Atherton is. It makes sense that the town is largely residential, with a much smaller focus on working opportunities.
+
+```{r, eval = T}
+# total CDD/HDD 
+colors <- c("Heating Degree Days" = "darkred", "Cooling Degree Days" = "steelblue")
+
+atherton_stats %>%
+  ggplot(
+    aes(
+      x = YEAR,
+    )
+  ) + 
+  geom_line(aes(y = HDD, color = "Heating Degree Days")) + 
+  geom_line(aes(y = CDD, color= "Cooling Degree Days")) +
+  labs(x = "Year", y = "Degree Days", title = "Atherton Cooling and Heating Degree Days, 2013 to 2019", color = "Legend") +
+  scale_color_manual(values = colors) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 3000))
+```
+
+This graph shows the number of cooling and heating degree days from 2013 to 2019. There does not seem to be a very clear trend in this time frame however, 2016 does stick out as having a relatively low number of both heating and cooling degree days, while 2019 is quite high.
+
+```{r, eval = T}
+emfacMoreYears <- read.csv("EMFAC2013-2019.csv", skip = 8) %>% 
+  transmute(
+    Year = as.factor(Calendar.Year),
+    Category = Vehicle.Category,
+    Fuel_Type = Fuel,
+    Percent_Trips = Trips/sum(Trips),
+    Percent_Miles = Total.VMT/sum(Total.VMT)
+  ) %>% 
+  filter(Fuel_Type == "Electricity") %>% 
+  group_by(Year) %>%
+  summarise(PercentTrips = sum(Percent_Trips), PercentMiles = sum(Percent_Miles))
+
+emfacMoreYears %>% 
+  ggplot() +
+  geom_col(aes(x = Year, y = PercentMiles), fill = "gold") + 
+  labs(title = "Proportion of All Miles Traveled By Electric Vehicles in the Bay Area",y = "Percent of All Miles Traveled By Electric Vehicles")
+```
+
+This graph shows the clear upward trend in the proportion miles traveled being attributable to electric vehicles. This is a clear indication that the generally wealthy residents of Atherton are increasingly purchasing and driving electric vehicles, which eliminates tailpipe emissions.
+
+Overall, it does seem that Atherton is shifting towards reducing overall emissions in their town. The most striking observation was the steep drop-off in building emissions from 2014 to 2015. From Climate Action webpage on the atherton.ca.us website, it is posted that "The Town of Atherton ... [has] been working San Mateo County Energy Watch (SMCEW) in cooperation with C/CAG and the energy-consulting firm DNV GL to complete a draft CAP. From March 2014 to September 2015, staff had been working with the Town’s Environmental Program’s Committee (EPC) in developing specific GHG reduction measures, as well as a complete, draft CAP." It is evident that sustainability and climate action are important values in the Atherton community and the years of analysis in this report are pivotal years in which tangible action is being sought out.
+
+The topic of wealth is central to the identity of Atherton in the context of the Bay Area. It would be insightful to further investigate how the relatively abundant access to financial resources in the town enables its residents to better control and minimize vehicle and building emissions. With the residents' wealth, it may be possible to feasibly reduce emissions at even faster rates than the current trends. 
+
+Since the town holds a clearly residential identity rather than being dominated by transportation and jobs, sustainability initiatives should be focused on mitigating the dominant residential emissions. As long as Atherton remains to be this type of wealthy, residential area, the future emissions would continue to be mainly constituted by residential energy use.
+
+When addressing the daunting issue of global warming due to excessive greenhouse gases, the accounting methodology should be catered towards incentivizing all greenhouse gas emitters to minimize their contributions. Whether they are large factory-requiring corporations or individuals driving a vehicle, the methodology should discourage these polluting processes. This is achievable through economic means, by subsidizing favorable alternatives or by enforcing taxes. However, the solutions should be designed such that all the burden is not disproportionately dumped upon only one of the contributing parties in the value chain.

@@ -826,23 +826,27 @@ rbind(ant_race, ant_hospital_race) %>%
 ```
 
 ```{r}
-ant_drive_10min <-
+ant_drive_15min <-
   ant_isochrones %>% 
   filter(
-    time == 10,
+    time == 15,
     mode == "driving"
   ) %>% 
   select(!c(mode, time))
 
-ant_pharm_drive_10min <-
+ant_pharm_drive_15min <-
   ant_access_raw %>% 
   filter(
-    time == 10,
-    mode == "driving",
+    time == 15
+  ) %>% 
+  filter(
+    mode == "driving"
+  ) %>% 
+  filter(
     amenity == "pharmacy"
   ) %>% 
   inner_join(
-    ant_drive_10min,
+    ant_drive_15min,
     by = "id"
   ) %>% 
   st_as_sf()
@@ -855,7 +859,7 @@ leaflet() %>%
     username = "mapbox"
   ) %>%
   addPolygons(
-    data = ant_pharm_drive_10min,
+    data = ant_pharm_drive_15min,
     label = ~name
   )
 ```
@@ -863,15 +867,15 @@ leaflet() %>%
 ```{r}
 sf_use_s2(FALSE)
 
-san_ram_blocks_2 <- 
-  san_ram_blocks %>% 
+ant_blocks_2 <- 
+  ant_blocks %>% 
   st_transform(26910) %>% 
   mutate(original_area = st_area(.))
 
-san_ram_block_hospital_intersect <-
-  san_ram_blocks_2 %>% 
+ant_block_pharm_intersect <-
+  ant_blocks_2 %>% 
   st_intersection(
-    san_ram_hospital_drive_5min %>% 
+    ant_pharm_drive_15min %>% 
       st_union() %>% 
       st_transform(26910)
   ) %>% 
@@ -882,10 +886,10 @@ san_ram_block_hospital_intersect <-
 ```
 
 ```{r}
-san_ram_race <-
+ant_race <-
   cc_pop_race_2020 %>% 
   filter(
-    block %in% san_ram_blocks$GEOID10
+    block %in% ant_blocks$GEOID10
   ) %>% 
   mutate(race = factor(race, levels = unique(cc_pop_race_2020$race))) %>% 
   group_by(race) %>% 
@@ -898,11 +902,11 @@ san_ram_race <-
     desc(perc)
   )
   
-san_ram_hospital_race <-
+ant_pharm_race <-
   cc_pop_race_2020 %>% 
   mutate(race = factor(race, levels = unique(cc_pop_race_2020$race))) %>% 
   left_join(
-    san_ram_block_hospital_intersect %>% 
+    ant_block_pharm_intersect %>% 
       select(block = GEOID10, perc_area) %>% 
       st_drop_geometry()
   ) %>% 
@@ -915,10 +919,127 @@ san_ram_hospital_race <-
   mutate(
     estimate = drop_units(estimate),
     perc = estimate/sum(estimate),
-    group = "San Ramon Population within \n5 min. drive of hospitals"
+    group = "Antioch Population within \n15 min. drive of pharmacies"
   ) %>% 
   arrange(
     desc(perc)
   )
 ```
+```{r}
+antioch_pharmacies <-
+  ant_access_raw %>% 
+  filter(
+    amenity == "pharmacy"
+  )
+```
 
+```{r}
+san_ram_pharmacies <-
+  san_ram_access_raw %>% 
+  filter(
+    amenity == "pharmacy"
+  )
+```
+
+SAN RAM PHARMACIES
+
+```{r}
+san_ram_drive_15min <-
+  san_ram_isochrones %>% 
+  filter(
+    time == 10,
+    mode == "driving"
+  ) %>% 
+  select(!c(mode, time))
+
+san_ram_pharm_drive_15min <-
+  san_ram_access_raw %>% 
+  filter(
+    time == 10
+  ) %>% 
+  filter(
+    mode == "driving"
+  ) %>% 
+  filter(
+    amenity == "pharmacy"
+  ) %>% 
+  left_join(
+    san_ram_drive_15min,
+    by = "id"
+  ) %>% 
+  st_as_sf()
+```
+
+```{r}
+leaflet() %>% 
+  addMapboxTiles(
+    style_id = "streets-v11",
+    username = "mapbox"
+  ) %>%
+  addPolygons(
+    data = san_ram_pharm_drive_15min,
+    label = ~name
+  )
+```
+
+```{r}
+sf_use_s2(FALSE)
+
+san_ram_blocks_2 <- 
+  ant_blocks %>% 
+  st_transform(26910) %>% 
+  mutate(original_area = st_area(.))
+
+san_ram_block_pharm_intersect <-
+  san_ram_blocks_2 %>% 
+  st_intersection(
+    san_ram_pharm_drive_15min %>% 
+      st_union() %>% 
+      st_transform(26910)
+  ) %>% 
+  mutate(
+    leftover_area = st_area(.),
+    perc_area = leftover_area / original_area
+  )
+```
+
+```{r}
+ant_race <-
+  cc_pop_race_2020 %>% 
+  filter(
+    block %in% ant_blocks$GEOID10
+  ) %>% 
+  mutate(race = factor(race, levels = unique(cc_pop_race_2020$race))) %>% 
+  group_by(race) %>% 
+  summarize(estimate = sum(estimate)) %>% 
+  mutate(
+    perc = estimate/sum(estimate),
+    group = "Full Population"
+  ) %>% 
+  arrange(
+    desc(perc)
+  )
+  
+ant_pharm_race <-
+  cc_pop_race_2020 %>% 
+  mutate(race = factor(race, levels = unique(cc_pop_race_2020$race))) %>% 
+  left_join(
+    ant_block_pharm_intersect %>% 
+      select(block = GEOID10, perc_area) %>% 
+      st_drop_geometry()
+  ) %>% 
+  filter(!is.na(perc_area)) %>% 
+  mutate(
+    estimate = estimate * perc_area
+  ) %>% 
+  group_by(race) %>% 
+  summarize(estimate = sum(estimate)) %>% 
+  mutate(
+    estimate = drop_units(estimate),
+    perc = estimate/sum(estimate),
+    group = "Antioch Population within \n15 min. drive of pharmacies"
+  ) %>% 
+  arrange(
+    desc(perc)
+  )
+```
