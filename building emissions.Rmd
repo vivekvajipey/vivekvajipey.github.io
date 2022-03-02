@@ -429,4 +429,145 @@ ath_pge_complete %>%
   scale_linetype_manual(values = c("solid","dotted"), labels = c("Electricity","Gas"))
 ```
 
+```{r}
+atherton_stats <-
+  atherton_pop %>% 
+  left_join(
+    ath_wac_2013to2019
+  ) %>% 
+  left_join(
+    atherton_CDD
+  ) %>% 
+  left_join(
+    atherton_HDD
+  )
+```
+
+```{r}
+saveRDS(atherton_stats, "atherton_stats.rds")
+atherton_stats <- readRDS("atherton_stats.rds")
+```
+
+
+```{r}
+# population graph
+atherton_stats %>%
+  ggplot(
+    aes(
+      x = YEAR,
+      y = population
+    )
+  ) + 
+  geom_line(color = "purple") +
+  labs(x = "Year", y = "People", title = "Atherton Population, 2013 to 2019") +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 8000))
+```
+
+```{r}
+# total jobs graph
+atherton_stats %>%
+  ggplot(
+    aes(
+      x = YEAR,
+      y = total_jobs
+    )
+  ) + 
+  geom_line(color = "blue") +
+  labs(x = "Year", y = "Jobs", title = "Atherton Jobs, 2013 to 2019") +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 3000))
+```
+
+```{r}
+# total CDD/HDD graph
+atherton_stats %>%
+  ggplot(
+    aes(
+      x = YEAR,
+      y = total_jobs
+    )
+  ) + 
+  geom_line() +
+  labs(x = "Year", y = "Jobs", title = "Atherton Jobs, 2013 to 2019")
+```
+
+```{r}
+zip_trips_ghg_yearly <- readRDS("zip_trips_ghg_yearly.rds")
+```
+
+```{r}
+yearly_vehicle_emissions <- 
+  zip_trips_ghg_yearly %>% 
+  group_by(
+    year
+  ) %>% 
+  summarize(
+    ghg = sum(ghg),
+  ) %>% 
+  mutate(
+    type = "vehicle"
+  )
+
+yearly_building_emissions <- 
+  ath_pge_complete %>% 
+  group_by(
+    YEAR
+  ) %>% 
+  summarize(
+    ghg = sum(TOTALTCO2E)
+  ) %>% 
+  rename(
+    year = YEAR
+  ) %>% 
+  mutate(
+    type = "building"
+  )
+
+atherton_emissions <-
+  yearly_building_emissions %>% 
+  rbind(
+    yearly_vehicle_emissions
+  )
+
+saveRDS(atherton_emissions, "atherton_emissions")
+```
+
+```{r}
+atherton_emissions <- readRDS("atherton_emissions")
+```
+
+```{r}
+atherton_emissions %>% 
+  filter(
+    type == "building"
+  ) %>% 
+  ggplot(
+    aes(x=year, y=ghg)
+    ) +
+  geom_bar(stat="identity",  fill = "#F8766D") + 
+  labs(x = "Year", y = "Emissions (metric tons of CO2 Equivalent)", title = "Atherton Total Building Emissions, 2013 to 2019") +
+  theme(legend.position = "none")
+```
+
+```{r}
+atherton_emissions %>% 
+  filter(
+    type == "vehicle"
+  ) %>% 
+  ggplot(
+    aes(x=year, y=ghg)
+    ) +
+  geom_bar(stat="identity", fill = "#00BFC4") + 
+  labs(x = "Year", y = "Emissions (metric tons of CO2 Equivalent)", title = "Atherton Total Vehicle Emissions, 2013 to 2019") +
+  theme(legend.position = "none")
+```
+
+```{r}
+atherton_emissions %>% 
+  ggplot(aes(x=year, y=ghg, group=type)) +
+    geom_line(
+      aes(color = type)
+    ) +
+    scale_y_continuous(trans = "log10") +
+    labs(x = "Year", y = "log(Emissions in metric tons of CO2e) ()", title = "Atherton Total Building and Vehicle Emissions, 2013 to 2019")
+```
 
