@@ -1,0 +1,210 @@
+---
+title: "218Y A5 DASHBOARD"
+runtime: shiny
+output: 
+  flexdashboard::flex_dashboard:
+    vertical_layout: scroll
+---
+
+```{r global, include=FALSE}
+library(jsonlite)
+library(remotes)
+library(tidyverse)
+library(sf)
+library(leaflet)
+library(mapboxapi)
+library(tigris)
+library(jsonlite)
+library(esri2sf)
+library(readr)
+library(plotly)
+library(flexdashboard)
+
+outdoor_sensor_data_smc <- readRDS("outdoor_sensor_data_smc.rds")
+# saveRDS(smc_pm25_voronoi_cbg, "smc_pm25_voronoi_cbg.rds")
+smc_pm25_voronoi_cbg <- readRDS("smc_pm25_voronoi_cbg.rds")
+
+smc_pm25_income_stacked <- readRDS("smc_pm25_income_stacked.rds")
+smc_pm25_income_fill <- readRDS("smc_pm25_income_fill.rds")
+# saveRDS(smc_pm25_race_stacked, "smc_pm25_race_stacked.rds")
+smc_pm25_race_stacked <- readRDS("smc_pm25_race_stacked.rds")
+smc_pm25_race_fill <- readRDS("smc_pm25_race_fill.rds")
+```
+
+
+
+Inputs {.sidebar}
+-------------------------------------
+
+```{r}
+checkboxGroupInput(
+  inputId = "juris", 
+  label = "Time Series Jurisdictions",
+  choices = c("Atherton", "East Palo Alto", "Foster City", "Half Moon Bay", "Redwood City", "San Mateo City"), 
+  selected = "East Palo Alto"
+)
+```
+
+```{r}
+checkboxGroupInput(
+  inputId = "city", 
+  label = "Map Cities",
+  choices = c("Atherton", "East Palo Alto", "Foster City", "Half Moon Bay", "Millbrae", "Portola Valley", "Redwood City", "San Mateo", "South San Francisco"), 
+  selected = "East Palo Alto"
+)
+```
+
+```{r}
+selectInput(
+  inputId = "equity", 
+  label = "Equity Analysis Type:",
+  choices = c("Income", "Race"), 
+  selected = "Income"
+)
+```
+
+Column
+-------------------------------------
+
+Link to Report: https://vivekvajipey.github.io/218Y_vivekvajipey_A5_report.html
+
+### PM2.5 Time Series
+
+```{r}
+plotlyOutput("plot")
+```
+
+```{r, context = "server"}
+observeEvent({
+  input$juris 
+  }, {
+  
+  outdoor_sensor_data_smc <-
+    outdoor_sensor_data_smc %>% 
+    filter(
+      city %in% input$juris
+    )
+  
+  chart <- smc_outdoor_time_series <- outdoor_sensor_data_smc %>% 
+  ggplot() +
+  geom_line(
+    aes(
+      x = date,
+      y = PM25,
+      color = city
+    )
+  ) +
+  scale_color_manual(values = c("#f94144", "#f9c74f", "#43aa8b", "#33a1fd", "#344CB7", "#7267CB")) +
+  ggtitle("San Mateo County PM 2.5 Time Series")
+    
+  
+  output$plot <- renderPlotly({
+    chart %>% 
+      ggplotly() %>% 
+      config(displayModeBar = F)
+  }) 
+})
+```
+
+### San Mateo County PM 2.5 Map
+
+```{r}
+leafletOutput("map")
+```
+
+```{r, context = "server"}
+observeEvent({
+  input$city
+  }, {
+  
+  smc_pm25_voronoi_cbg <-
+    smc_pm25_voronoi_cbg %>% 
+    filter(
+      City %in% input$city
+    )  
+  
+  pm25_pal <- colorNumeric(
+    palette = "RdYlGn",
+    reverse = T,
+    domain = c(
+      smc_pm25_voronoi_cbg$PM25
+      )
+    )
+  
+  output$map <- renderLeaflet({
+    leaflet() %>% 
+      addProviderTiles(provider = providers$CartoDB.Positron) %>% 
+      addPolygons(
+        data = smc_pm25_voronoi_cbg,
+        fillColor = ~pm25_pal(PM25),
+        fillOpacity = 0.5,
+        color = "white",
+        weight = 0.5,
+        label = ~PM25,
+        highlightOptions = highlightOptions(
+          weight = 2,
+          opacity = 1
+        )
+      ) %>% 
+      addLegend(
+        pal = pm25_pal,
+        values = c(
+          smc_pm25_voronoi_cbg$PM25
+        )
+      )
+  })
+  
+})
+```
+
+
+### San Mateo County PM2.5 Stacked Equity Chart
+
+```{r}
+plotlyOutput("equityStacked")
+```
+
+```{r, context = "server"}
+observeEvent({
+  input$equity
+  }, {
+
+  smc_equity_stacked <- switch(
+    input$equity,
+    "Income" = smc_pm25_income_stacked,
+    "Race" = smc_pm25_race_stacked
+  )
+    
+  # smc_equity_stacked <- case_when(
+  #     input$equity == "Income" ~ smc_pm25_income_stacked,
+  #     input$equity == "Race" ~ smc_pm25_race_stacked
+  #   )
+
+  output$equityStacked <- renderPlotly({
+    smc_equity_stacked
+  })
+})
+```
+
+### San Mateo County PM2.5 Stacked Equity Chart
+
+```{r}
+plotlyOutput("equityFilled")
+```
+
+```{r, context = "server"}
+observeEvent({
+  input$equity
+  }, {
+    
+  smc_equity_fill <- switch(
+    input$equity,
+    "Income" = smc_pm25_income_fill,
+    "Race" = smc_pm25_race_fill
+  )
+
+  output$equityFilled <- renderPlotly({
+    smc_equity_fill
+  })
+})
+```

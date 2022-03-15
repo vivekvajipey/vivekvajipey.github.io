@@ -203,6 +203,7 @@ acs_vars_2019_5yr <-
     name = "2019/acs/acs5",
     type = "variables"
   )
+saveRDS(acs_vars_2019_5yr, "acs_vars_2019_5yr.RDS")
 ```
 
 
