@@ -1,87 +1,153 @@
-import React from 'react';
-import { BrowserRouter as Router, Route, Routes, Link } from 'react-router-dom';
-import styled from 'styled-components';
+import React, { useState } from 'react';
 
-const AppContainer = styled.div`
-  font-family: 'Serif', serif;
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 20px;
-  background-color: #faf9f7;
-  color: #333;
-`;
-
-const Header = styled.header`
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 40px;
-`;
-
-const Logo = styled.h1`
-  font-size: 24px;
-  font-weight: normal;
-`;
-
-const Nav = styled.nav`
-  display: flex;
-  gap: 20px;
-`;
-
-const StyledLink = styled(Link)`
-  text-decoration: none;
-  color: #333;
-  &:hover {
-    text-decoration: underline;
-  }
-`;
-
-const MainContent = styled.main`
-  font-size: 18px;
-  line-height: 1.6;
-`;
-
-const Home = () => (
-  <MainContent>
-    <h2>Welcome to My Personal Website</h2>
-    <p>This is a simple, clean React website inspired by the Inflection AI design.</p>
-  </MainContent>
+const AppContainer = ({ children }) => (
+  <div style={{ 
+    fontFamily: 'Georgia, serif',
+    maxWidth: '1200px',
+    margin: '0 auto',
+    padding: '40px 20px',
+    backgroundColor: '#faf9f7',
+    color: '#333',
+    minHeight: '100vh',
+    lineHeight: 1.6
+  }}>
+    {children}
+  </div>
 );
 
-const About = () => (
-  <MainContent>
-    <h2>About Me</h2>
-    <p>Here you can add information about yourself, your skills, and your interests.</p>
-  </MainContent>
+const Header = ({ children }) => (
+  <header style={{
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: '60px',
+    borderBottom: '1px solid #e0e0e0',
+    paddingBottom: '20px'
+  }}>
+    {children}
+  </header>
 );
 
-const Projects = () => (
-  <MainContent>
-    <h2>My Projects</h2>
-    <p>This section can showcase your personal or professional projects.</p>
-  </MainContent>
+const Logo = ({ children }) => (
+  <h1 style={{
+    fontSize: '28px',
+    fontWeight: 'normal',
+    margin: 0
+  }}>
+    {children}
+  </h1>
 );
 
-function App() {
+const Nav = ({ children }) => (
+  <nav style={{
+    display: 'flex',
+    gap: '30px'
+  }}>
+    {children}
+  </nav>
+);
+
+const NavLink = ({ children, isActive, onClick }) => (
+  <a 
+    href="#" 
+    onClick={onClick}
+    style={{
+      textDecoration: 'none',
+      color: '#333',
+      fontWeight: isActive ? 'bold' : 'normal',
+      fontSize: '18px'
+    }}
+  >
+    {children}
+  </a>
+);
+
+const MainContent = ({ children }) => (
+  <main style={{
+    fontSize: '18px',
+    lineHeight: '1.8'
+  }}>
+    {children}
+  </main>
+);
+
+const Section = ({ children, title }) => (
+  <section style={{
+    marginBottom: '40px',
+    background: '#fff',
+    padding: '30px',
+    borderRadius: '12px',
+    boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)'
+  }}>
+    <h2 style={{ 
+      fontSize: '36px', 
+      marginBottom: '20px',
+      fontWeight: 'normal'
+    }}>{title}</h2>
+    {children}
+  </section>
+);
+
+const PlaceholderImage = () => (
+  <div style={{
+    width: '100%',
+    height: '200px',
+    background: 'linear-gradient(45deg, #f3ec78, #af4261)',
+    borderRadius: '12px',
+    marginBottom: '20px'
+  }} />
+);
+
+const UpdatedWebsitePreview = () => {
+  const [activePage, setActivePage] = useState('Home');
+
+  const pages = {
+    Home: (
+      <>
+        <Section title="Welcome">
+          <PlaceholderImage />
+          <p>This is a simple, clean React website inspired by the Inflection AI design. It showcases a minimalist approach with a focus on typography and whitespace.</p>
+        </Section>
+      </>
+    ),
+    About: (
+      <>
+        <Section title="About Me">
+          <p>Here you can add information about yourself, your skills, and your interests. The clean design helps to highlight your content and make it easy to read.</p>
+        </Section>
+      </>
+    ),
+    Projects: (
+      <>
+        <Section title="My Projects">
+          <PlaceholderImage />
+          <p>This section can showcase your personal or professional projects. Each project could be presented in a card-like format, similar to this section's design.</p>
+        </Section>
+      </>
+    )
+  };
+
   return (
-    <Router>
-      <AppContainer>
-        <Header>
-          <Logo>Vivek Vajipey</Logo>
-          <Nav>
-            <StyledLink to="/">Home</StyledLink>
-            <StyledLink to="/about">About</StyledLink>
-            <StyledLink to="/projects">Projects</StyledLink>
-          </Nav>
-        </Header>
-        <Routes>
-          <Route path="/" element={<Home />} />
-          <Route path="/about" element={<About />} />
-          <Route path="/projects" element={<Projects />} />
-        </Routes>
-      </AppContainer>
-    </Router>
+    <AppContainer>
+      <Header>
+        <Logo>Vivek Vajipey</Logo>
+        <Nav>
+          {Object.keys(pages).map(page => (
+            <NavLink 
+              key={page} 
+              isActive={activePage === page}
+              onClick={() => setActivePage(page)}
+            >
+              {page}
+            </NavLink>
+          ))}
+        </Nav>
+      </Header>
+      <MainContent>
+        {pages[activePage]}
+      </MainContent>
+    </AppContainer>
   );
-}
+};
 
-export default App;
+export default UpdatedWebsitePreview;
